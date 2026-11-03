@@ -219,3 +219,16 @@ test('AI assistant answers from real data', async () => {
   assert.equal(r.status, 200);
   assert.match(r.data.answer, /Big Product|Shampoo|above their minimum/);
 });
+
+test('auto-login works only from this computer and can be switched off', async () => {
+  const r = await call('POST', '/api/auth/auto-login', {}, null);
+  assert.equal(r.status, 200);
+  const me = await call('GET', '/api/auth/me', null, r.data.token);
+  assert.equal(me.data.user.role, 'owner');
+  process.env.AUTO_LOGIN = '0';
+  assert.equal((await call('POST', '/api/auth/auto-login', {}, null)).status, 403);
+  delete process.env.AUTO_LOGIN;
+  // a request forwarded from another machine is refused
+  const remote = await fetch(base + '/api/auth/auto-login', { method: 'POST', headers: { 'X-Forwarded-For': '203.0.113.9' } });
+  assert.equal(remote.status, 403);
+});

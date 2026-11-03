@@ -41,6 +41,9 @@ export function ToastProvider({ children }) {
 export const useToast = () => useContext(ToastCtx);
 
 // ---- auth / session ----------------------------------------------------------------------
+// After a manual sign-out, skip auto-login for this tab so other roles can be tested
+const noAuto = () => { try { return sessionStorage.getItem('salon.noauto') === '1'; } catch { return false; } };
+const setNoAuto = (v) => { try { v ? sessionStorage.setItem('salon.noauto', '1') : sessionStorage.removeItem('salon.noauto'); } catch { /* storage blocked */ } };
 const AuthCtx = createContext(null);
 export function AuthProvider({ children }) {
   const [state, setState] = useState({ loading: true, user: null, salon: null, branches: [] });
@@ -48,6 +51,10 @@ export function AuthProvider({ children }) {
   const [version, setVersion] = useState(0); // bump to make pages refetch after branch switch
 
   const load = useCallback(async () => {
+    if (!getToken() && !noAuto()) {
+      // Local testing: sign in automatically as the owner when the server allows it
+      try { setToken((await api.post('/api/auth/auto-login')).token); } catch { /* not allowed or no owner yet */ }
+    }
     if (!getToken()) return setState({ loading: false, user: null, salon: null, branches: [] });
     try {
       const me = await api.get('/api/auth/me');
@@ -65,8 +72,8 @@ export function AuthProvider({ children }) {
 
   const value = useMemo(() => ({
     ...state, branch, version,
-    login: async (token) => { setToken(token); await load(); },
-    logout: () => { setToken(null); setState({ loading: false, user: null, salon: null, branches: [] }); },
+    login: async (token) => { setNoAuto(false); setToken(token); await load(); },
+    logout: () => { setNoAuto(true); setToken(null); setState({ loading: false, user: null, salon: null, branches: [] }); },
     refresh: load,
     switchBranch: (b) => { setBranch(b); setBranchState(String(b)); setVersion((v) => v + 1); },
     can: (mod) => !!state.user?.permissions?.includes(mod),

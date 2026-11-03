@@ -10,8 +10,22 @@ const r = Router();
 const fails = new Map();
 const throttleKey = (req, email) => `${req.ip}|${String(email).toLowerCase()}`;
 
-r.get('/setup-status', h((_req, res) => {
-  res.json({ needsSetup: !get('SELECT id FROM users LIMIT 1'), salon: getSettings().salon.name });
+// Auto-login for local testing: signs in as the owner without a password, but only for
+// requests from this same computer (or when AUTO_LOGIN=1). Set AUTO_LOGIN=0 to turn it off.
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+const autoLoginAllowed = (req) => process.env.AUTO_LOGIN !== '0' && (process.env.AUTO_LOGIN === '1' || LOOPBACK.has(req.ip));
+
+r.get('/setup-status', h((req, res) => {
+  res.json({ needsSetup: !get('SELECT id FROM users LIMIT 1'), salon: getSettings().salon.name, autoLogin: autoLoginAllowed(req) });
+}));
+
+r.post('/auto-login', h((req, res) => {
+  if (!autoLoginAllowed(req)) throw new HttpError(403, 'Automatic sign-in is only available on this computer');
+  const user = get(`SELECT * FROM users WHERE role='owner' AND is_active=1 ORDER BY id LIMIT 1`);
+  if (!user) throw new HttpError(404, 'No owner account yet');
+  run('UPDATE users SET last_login=? WHERE id=?', localISO(), user.id);
+  audit({ user, ip: req.ip }, 'auto_login', 'user', user.id);
+  res.json({ token: signToken({ uid: user.id }) });
 }));
 
 r.post('/setup', h(async (req, res) => {

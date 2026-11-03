@@ -26,6 +26,8 @@ To reset to demo data at any time (wipes the database):
 npm run seed
 ```
 
+**No login needed for local testing:** when you open the app on the same computer that runs it, you're signed in as the owner automatically. Visitors from other machines still see the login page. Sign out to try other roles; set `AUTO_LOGIN=0` to turn this off.
+
 Demo logins (password `Demo@1234` for staff, `Owner@1234` for the owner created by `npm run seed`):
 
 | Role | Email |
@@ -66,6 +68,7 @@ End-to-end workflow tests run against a throwaway database: double-booking preve
 | `DATA_DIR` | `./data` | Database, uploads and signing secret |
 | `TZ` | `Asia/Kolkata` | Salon time zone for all date maths |
 | `JWT_SECRET` | auto-generated in `data/.secret` | Session signing key |
+| `AUTO_LOGIN` | on for this computer only | `0` disables automatic owner sign-in; `1` allows it from any machine (testing only) |
 | `ANTHROPIC_API_KEY` | — | Optional; enables Claude for the AI assistant (can also be set in Settings) |
 
 **Backups:** everything lives in `data/` — copy `data/salon.db` (SQLite, WAL mode) and `data/uploads/`. Owners can also download a full JSON export from **Settings → Data & backup**.

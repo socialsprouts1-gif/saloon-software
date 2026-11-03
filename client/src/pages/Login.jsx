@@ -57,6 +57,7 @@ export default function Login() {
               <Input label="Email" type="email" value={f.email} onChange={set('email')} required autoComplete="email" />
               <Input label="Password" type="password" value={f.password} onChange={set('password')} required minLength={status.needsSetup ? 8 : 1} autoComplete={status.needsSetup ? 'new-password' : 'current-password'} hint={status.needsSetup ? 'At least 8 characters' : undefined} />
               {status.needsSetup && <label className="check"><input type="checkbox" checked={f.demo} onChange={set('demo')} /> Load realistic demo data (you can start fresh later)</label>}
+              {!status.needsSetup && status.autoLogin && <p className="faint small">Testing tip: demo owner is <b>owner@demo.salon</b> / <b>Owner@1234</b>. Staff logins (manager@, reception@, accounts@, stylist@demo.salon) use <b>Demo@1234</b>.</p>}
               {err && <div className="badge red plain" style={{ padding: '8px 12px', borderRadius: 10, whiteSpace: 'normal', textTransform: 'none' }}>{err}</div>}
               <Button variant="primary" size="lg" type="submit" loading={busy} className="block">{status.needsSetup ? 'Create salon' : 'Sign in'}</Button>
             </div>
