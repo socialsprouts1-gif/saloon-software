@@ -4,37 +4,64 @@ import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { all, get, insert, update, run, db, getSettings, setSetting, DEFAULT_SETTINGS, UPLOAD_DIR } from '../db.js';
+import { Readable } from 'node:stream';
+import { all, get, insert, update, run, getSettings, setSetting, DEFAULT_SETTINGS, UPLOAD_DIR, IS_VERCEL, IS_REMOTE } from '../db.js';
 import { requirePerm, MODULES, ROLES, DEFAULT_PERMISSIONS, randomToken } from '../lib/auth.js';
 import { h, parse, HttpError, audit, paginate } from '../lib/util.js';
+import { runJobsIfDue } from '../lib/jobs.js';
 
 const r = Router();
 
 // ---- uploads ------------------------------------------------------------------
+// Local install: files go to data/uploads. Vercel: files go to Vercel Blob
+// (images public, receipts private). Receipts stored in Blob are kept as "blob:<pathname>".
+const USE_BLOB = !!process.env.BLOB_READ_WRITE_TOKEN;
 const PUBLIC_DIR = path.join(UPLOAD_DIR, 'public');
 const PRIVATE_DIR = path.join(UPLOAD_DIR, 'private');
-fs.mkdirSync(PUBLIC_DIR, { recursive: true }); fs.mkdirSync(PRIVATE_DIR, { recursive: true });
+if (!IS_VERCEL) { fs.mkdirSync(PUBLIC_DIR, { recursive: true }); fs.mkdirSync(PRIVATE_DIR, { recursive: true }); }
 const ALLOWED = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/svg+xml': '.svg', 'application/pdf': '.pdf' };
-const makeUploader = (dir, types) => multer({
-  storage: multer.diskStorage({ destination: dir, filename: (_q, f, cb) => cb(null, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ALLOWED[f.mimetype]}`) }),
-  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+const MAX_MB = IS_VERCEL ? 4 : 5; // Vercel caps request bodies at 4.5 MB
+const makeUploader = (types) => multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_MB * 1024 * 1024, files: 1 },
   fileFilter: (_q, f, cb) => (types.includes(f.mimetype) ? cb(null, true) : cb(new HttpError(400, `File type not allowed (${types.map((t) => ALLOWED[t]).join(', ')})`))),
 });
 // SVG excluded from public images: it can carry script
-const imageUpload = makeUploader(PUBLIC_DIR, ['image/png', 'image/jpeg', 'image/webp']);
-const receiptUpload = makeUploader(PRIVATE_DIR, ['image/png', 'image/jpeg', 'image/webp', 'application/pdf']);
+const imageUpload = makeUploader(['image/png', 'image/jpeg', 'image/webp']);
+const receiptUpload = makeUploader(['image/png', 'image/jpeg', 'image/webp', 'application/pdf']);
+const fileName = (f) => `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ALLOWED[f.mimetype]}`;
 
-r.post('/uploads/image', imageUpload.single('file'), h((req, res) => {
-  if (!req.file) throw new HttpError(400, 'No file uploaded');
-  res.json({ url: `/uploads/${req.file.filename}` });
+async function saveUpload(file, kind) {
+  if (!file) throw new HttpError(400, 'No file uploaded');
+  const name = fileName(file);
+  if (USE_BLOB) {
+    const { put } = await import('@vercel/blob');
+    const access = kind === 'public' ? 'public' : 'private';
+    const b = await put(`${kind === 'public' ? 'images' : 'receipts'}/${name}`, file.buffer, { access, contentType: file.mimetype, addRandomSuffix: true });
+    return kind === 'public' ? b.url : `blob:${b.pathname}`;
+  }
+  if (IS_VERCEL) throw new HttpError(400, 'File uploads need a Vercel Blob store: Vercel → Storage → Blob → Connect to this project, then redeploy.');
+  fs.writeFileSync(path.join(kind === 'public' ? PUBLIC_DIR : PRIVATE_DIR, name), file.buffer);
+  return kind === 'public' ? `/uploads/${name}` : name;
+}
+
+r.post('/uploads/image', imageUpload.single('file'), h(async (req, res) => {
+  res.json({ url: await saveUpload(req.file, 'public') });
 }));
-r.post('/uploads/receipt', requirePerm('expenses'), receiptUpload.single('file'), h((req, res) => {
-  if (!req.file) throw new HttpError(400, 'No file uploaded');
-  res.json({ file: req.file.filename });
+r.post('/uploads/receipt', requirePerm('expenses'), receiptUpload.single('file'), h(async (req, res) => {
+  res.json({ file: await saveUpload(req.file, 'private') });
 }));
-r.get('/files/:name', requirePerm('expenses'), h((req, res) => {
-  const name = path.basename(req.params.name);
-  const f = path.join(PRIVATE_DIR, name);
+r.get('/files/:name', requirePerm('expenses'), h(async (req, res) => {
+  const name = String(req.params.name);
+  if (name.startsWith('blob:')) {
+    if (!USE_BLOB) throw new HttpError(404, 'File not found');
+    const { get: getBlob } = await import('@vercel/blob');
+    const b = await getBlob(name.slice(5), { access: 'private' });
+    if (!b?.stream) throw new HttpError(404, 'File not found');
+    res.setHeader('Content-Type', b.blob?.contentType || 'application/octet-stream');
+    return Readable.fromWeb(b.stream).pipe(res);
+  }
+  const f = path.join(PRIVATE_DIR, path.basename(name));
   if (!fs.existsSync(f)) throw new HttpError(404, 'File not found');
   res.sendFile(f);
 }));
@@ -103,6 +130,7 @@ r.post('/settings/booking/regenerate', requirePerm('booking', 'settings'), h((re
 
 // ---- notifications ---------------------------------------------------------------
 r.get('/notifications', h((req, res) => {
+  runJobsIfDue(); // keeps reminders and recurring expenses current on serverless hosts
   const { limit, offset, page, pageSize } = paginate(req.query);
   const where = `WHERE (branch_id IS NULL OR ? IS NULL OR branch_id=?)${req.query.unread ? ' AND is_read=0' : ''}${req.query.type ? ' AND type=?' : ''}`;
   const p = [req.branchId, req.branchId, ...(req.query.type ? [req.query.type] : [])];
@@ -145,7 +173,9 @@ r.get('/export', requirePerm('settings'), h((req, res) => {
 }));
 
 r.get('/meta/db-check', requirePerm('settings'), h((_req, res) => {
-  res.json({ integrity: db.prepare('PRAGMA integrity_check').get() });
+  let integrity;
+  try { integrity = get('PRAGMA integrity_check'); } catch { integrity = { integrity_check: IS_REMOTE ? 'managed by host' : 'unavailable' }; }
+  res.json({ integrity });
 }));
 
 export default r;

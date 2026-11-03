@@ -43,6 +43,7 @@ r.get('/book/:token', h((req, res) => {
     salon: { name: s.salon.name, tagline: s.salon.tagline, logo: s.salon.logo, address: s.salon.address, phone: s.salon.phone, email: s.salon.email, currency_symbol: s.salon.currency_symbol },
     booking: { theme_color: s.booking.theme_color, welcome: s.booking.welcome, show_prices: s.booking.show_prices, max_advance_days: s.appointments.max_advance_days, allow_any_stylist: s.appointments.allow_any_stylist },
     opening_hours: s.opening_hours,
+    today: today(), // salon-local date, so visitors in other time zones see the right days
     branches: all('SELECT id,name,address,phone FROM branches WHERE is_active=1 ORDER BY id'),
     services, employees, packages,
   });

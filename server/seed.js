@@ -1,6 +1,6 @@
-process.env.TZ ||= 'Asia/Kolkata';
+import './tz.js';
 import { fileURLToPath } from 'node:url';
-import { db, all, get, insert, run, tx, setSetting, getSettings } from './db.js';
+import { db, all, get, insert, run, tx, setSetting, getSettings, IS_REMOTE, withScratchDatabase, copyDatabaseFrom } from './db.js';
 import { hashPassword, randomToken } from './lib/auth.js';
 import { today, addDays, parseDate, toMin, fromMin, addMinutes, money } from './lib/util.js';
 import { createAppointment } from './lib/scheduling.js';
@@ -17,7 +17,20 @@ const chance = (p) => rnd() < p;
 
 export const DEMO_STAFF_PASSWORD = 'Demo@1234';
 
-export function seedDemo({ salonName = 'Lumière Salon & Spa', ownerName = 'Salon Owner', email = 'owner@demo.salon', password = 'Owner@1234' } = {}) {
+/**
+ * Load demo data. With a hosted database the data is generated in memory first and then
+ * copied over in bulk, which needs a few hundred round trips instead of thousands.
+ */
+export function seedDemo(opts = {}) {
+  if (!IS_REMOTE) return generateDemo(opts, { days: Number(process.env.DEMO_DAYS) || 175, customers: 420 });
+  let creds;
+  const scratch = withScratchDatabase(() => { creds = generateDemo(opts, { days: Number(process.env.DEMO_DAYS) || 90, customers: 300 }); });
+  copyDatabaseFrom(scratch);
+  scratch.close();
+  return creds;
+}
+
+function generateDemo({ salonName = 'Lumière Salon & Spa', ownerName = 'Salon Owner', email = 'owner@demo.salon', password = 'Owner@1234' } = {}, size) {
   const T = today();
   tx(() => {
     // ---- settings & branches -------------------------------------------------------------
@@ -129,9 +142,9 @@ export function seedDemo({ salonName = 'Lumière Salon & Spa', ownerName = 'Salo
     const last = ['Gupta', 'Rao', 'Verma', 'Patel', 'Kulkarni', 'Banerjee', 'Shetty', 'Agarwal', 'Bhat', 'Chopra', 'Hegde', 'Saxena', 'Naidu', 'Malhotra', 'Krishnan'];
     const female = new Set(['Aditi', 'Ishita', 'Nisha', 'Tanvi', 'Riya', 'Neha', 'Shreya', 'Pallavi', 'Sanya', 'Diya', 'Swati', 'Ira', 'Lavanya', 'Anjali', 'Kriti', 'Megha', 'Bhavna', 'Simran', 'Pooja', 'Zoya']);
     const customers = [];
-    for (let i = 0; i < 420; i++) {
+    for (let i = 0; i < size.customers; i++) {
       const fn = pick(first), name = `${fn} ${pick(last)}`;
-      const created = addDays(T, -Math.floor(Math.pow(rnd(), 0.7) * 175));
+      const created = addDays(T, -Math.floor(Math.pow(rnd(), 0.7) * size.days));
       const bday = i === 3 ? `1994-${T.slice(5)}` : `19${int(75, 99)}-${String(int(1, 12)).padStart(2, '0')}-${String(int(1, 28)).padStart(2, '0')}`;
       const id = insert('customers', { name, phone: `9${int(100000000, 999999999)}`, email: chance(0.6) ? `${fn.toLowerCase()}${i}@mail.example` : null, gender: female.has(fn) ? 'female' : 'male', birthday: chance(0.7) ? bday : null, branch_id: chance(0.7) ? b1 : b2, source: pick(['walk_in', 'walk_in', 'phone', 'online', 'qr', 'referral']), notes: chance(0.15) ? pick(['Prefers ammonia-free colour', 'Sensitive skin – patch test first', 'Likes quiet service', 'Allergic to fragrance']) : null });
       run('UPDATE customers SET created_at=? WHERE id=?', `${created} 11:00:00`, id);
@@ -141,7 +154,7 @@ export function seedDemo({ salonName = 'Lumière Salon & Spa', ownerName = 'Salo
     // ---- appointments, invoices, attendance (history + upcoming) ------------------------------------------
     const branchEmps = (b) => all(`SELECT * FROM employees WHERE branch_id=? AND status='active' AND id IN (SELECT employee_id FROM employee_services)`, b);
     const empSvcs = Object.fromEntries(all('SELECT employee_id, GROUP_CONCAT(service_id) s FROM employee_services GROUP BY employee_id').map((r) => [r.employee_id, r.s.split(',').map(Number)]));
-    const DAYS = 175;
+    const DAYS = size.days;
     for (let back = DAYS; back >= -7; back--) {
       const date = addDays(T, -back);
       const wd = parseDate(date).getDay();
@@ -169,7 +182,7 @@ export function seedDemo({ salonName = 'Lumière Salon & Spa', ownerName = 'Salo
             let status = future ? (chance(0.6) ? 'confirmed' : 'pending') : roll < 0.06 ? 'cancelled' : roll < 0.1 ? 'no_show' : 'completed';
             const apptId = createAppointment({ branchId: b, customerId: cust.id, employeeId: e.id, serviceIds: sids, start, source, status: status === 'completed' ? 'checked_in' : status, notes: null });
             const bookedOn = addDays(date, -int(0, 3));
-            run('UPDATE appointments SET created_at=? WHERE id=?', `${bookedOn < T ? bookedOn : T} 09:${String(int(10, 59))}:00`, apptId);
+            run('UPDATE appointments SET created_at=? WHERE id=?', bookedOn < T ? `${bookedOn} 09:${String(int(10, 59))}:00` : `${T} 00:${String(int(10, 59))}:00`, apptId);
             if (status === 'cancelled') run(`UPDATE appointments SET cancel_reason=? WHERE id=?`, pick(['Customer rescheduled', 'Not feeling well', 'Travel plans changed']), apptId);
             if (status === 'completed') {
               const items = sids.map((sid) => ({ type: 'service', ref_id: sid, qty: 1, employee_id: e.id }));
@@ -224,7 +237,7 @@ export function seedDemo({ salonName = 'Lumière Salon & Spa', ownerName = 'Salo
     // ---- expenses ---------------------------------------------------------------------------------------------
     for (let m = 6; m >= 0; m--) {
       const monthStart = `${addDays(T, -30 * m).slice(0, 7)}-01`;
-      if (monthStart > T) continue;
+      if (monthStart > T || monthStart.slice(0, 7) < addDays(T, -DAYS).slice(0, 7)) continue;
       const d = (day) => { const x = `${monthStart.slice(0, 8)}${String(day).padStart(2, '0')}`; return x <= T ? x : null; };
       for (const [b, rent] of [[b1, 85000], [b2, 60000]]) {
         const E2 = (day, category, amount, desc, method = 'bank_transfer') => { const dt = d(day); if (dt) insert('expenses', { branch_id: b, category, amount, date: dt, payment_method: method, description: desc }); };

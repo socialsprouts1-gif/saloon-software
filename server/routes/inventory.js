@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { all, get, insert, update, run, tx } from '../db.js';
+import { all, get, insert, update, run, tx, nowStamp } from '../db.js';
 import { requirePerm, can } from '../lib/auth.js';
-import { h, parse, HttpError, audit, paginate, today, notify, money, resolveRange } from '../lib/util.js';
+import { h, parse, HttpError, audit, paginate, today, addDays, notify, money, resolveRange } from '../lib/util.js';
 import { productRevenue, inventoryStats } from '../lib/analytics.js';
 import { resolveBranch } from './appointments.js';
 
@@ -33,7 +33,7 @@ r.get('/products', requirePerm('inventory', 'billing'), h((req, res) => {
   if (req.query.category) { w.push('p.category=?'); p.push(req.query.category); }
   if (req.query.filter === 'low') w.push('p.stock > 0 AND p.stock <= p.min_stock');
   if (req.query.filter === 'out') w.push('p.stock <= 0');
-  if (req.query.filter === 'expiring') w.push(`p.expiry_date IS NOT NULL AND p.expiry_date <= date('now','+60 day')`);
+  if (req.query.filter === 'expiring') w.push(`p.expiry_date IS NOT NULL AND p.expiry_date <= '${addDays(today(), 60)}'`);
   if (req.query.in_stock) w.push('p.stock > 0');
   const where = w.join(' AND ');
   const rows = all(`SELECT p.*, s.name supplier, b.name branch_name FROM products p LEFT JOIN suppliers s ON s.id=p.supplier_id LEFT JOIN branches b ON b.id=p.branch_id WHERE ${where} ORDER BY p.name LIMIT ? OFFSET ?`, ...p, limit, offset);
@@ -97,8 +97,8 @@ r.post('/products/:id/stock', requirePerm('inventory'), h((req, res) => {
     else { if (!(b.qty > 0)) throw new HttpError(400, 'Quantity must be positive'); delta = b.type === 'out' ? -b.qty : b.qty; }
     if (p.stock + delta < 0) throw new HttpError(400, `Only ${p.stock} in stock`);
     const balance = p.stock + delta;
-    run(`UPDATE products SET stock=?, updated_at=datetime('now','localtime')${b.type === 'purchase' ? ', purchase_date=?, purchase_price=COALESCE(?, purchase_price), supplier_id=COALESCE(?, supplier_id)' : ''} WHERE id=?`,
-      ...(b.type === 'purchase' ? [balance, b.date || today(), b.unit_cost ?? null, b.supplier_id ?? null, id] : [balance, id]));
+    run(`UPDATE products SET stock=?, updated_at=?${b.type === 'purchase' ? ', purchase_date=?, purchase_price=COALESCE(?, purchase_price), supplier_id=COALESCE(?, supplier_id)' : ''} WHERE id=?`,
+      ...(b.type === 'purchase' ? [balance, nowStamp(), b.date || today(), b.unit_cost ?? null, b.supplier_id ?? null, id] : [balance, nowStamp(), id]));
     insert('stock_movements', { product_id: id, branch_id: p.branch_id, type: b.type, qty: delta, unit_cost: b.unit_cost ?? p.purchase_price, reason: b.reason || null, supplier_id: b.supplier_id ?? null, user_id: req.user.id, balance_after: balance });
     if (b.type === 'purchase' && b.record_expense) {
       const sup = b.supplier_id ? get('SELECT name FROM suppliers WHERE id=?', b.supplier_id)?.name : null;

@@ -110,19 +110,20 @@ export function employeePerformance(b, from, to) {
 export function customerStats(b, from, to) {
   const f = bf(b, 'i.branch_id');
   const newCustomers = get(`SELECT COUNT(*) n FROM customers WHERE substr(created_at,1,10) BETWEEN ? AND ?${b ? ` AND branch_id=${Number(b)}` : ''}`, from, to).n;
-  const visitors = all(`SELECT DISTINCT i.customer_id id FROM invoices i WHERE i.${VALID_INV} AND i.customer_id IS NOT NULL AND i.date BETWEEN ? AND ?${f.s}`, from, to);
-  let returning = 0;
-  for (const v of visitors) if (get(`SELECT 1 FROM invoices WHERE customer_id=? AND ${VALID_INV} AND date < ? LIMIT 1`, v.id, from)) returning++;
+  // Single queries (no per-customer loop) so this stays fast on a hosted database
+  const visitors = get(`SELECT COUNT(DISTINCT i.customer_id) n FROM invoices i WHERE i.${VALID_INV} AND i.customer_id IS NOT NULL AND i.date BETWEEN ? AND ?${f.s}`, from, to).n;
+  const returning = get(`SELECT COUNT(DISTINCT i.customer_id) n FROM invoices i WHERE i.${VALID_INV} AND i.customer_id IS NOT NULL AND i.date BETWEEN ? AND ?${f.s}
+    AND EXISTS (SELECT 1 FROM invoices j WHERE j.customer_id=i.customer_id AND j.${VALID_INV} AND j.date < ?)`, from, to, from).n;
   // retention: of customers who visited in the previous equal-length window, how many came back in this one
   const len = Math.round((parseDate(to) - parseDate(from)) / 86400000) + 1;
   const prevFrom = addDays(from, -len), prevTo = addDays(from, -1);
-  const prev = all(`SELECT DISTINCT customer_id id FROM invoices i WHERE i.${VALID_INV} AND customer_id IS NOT NULL AND date BETWEEN ? AND ?${f.s}`, prevFrom, prevTo);
-  const visitorSet = new Set(visitors.map((v) => v.id));
-  const retained = prev.filter((p) => visitorSet.has(p.id)).length;
+  const prev = get(`SELECT COUNT(DISTINCT customer_id) n FROM invoices i WHERE i.${VALID_INV} AND customer_id IS NOT NULL AND date BETWEEN ? AND ?${f.s}`, prevFrom, prevTo).n;
+  const retained = get(`SELECT COUNT(DISTINCT i.customer_id) n FROM invoices i WHERE i.${VALID_INV} AND i.customer_id IS NOT NULL AND i.date BETWEEN ? AND ?${f.s}
+    AND EXISTS (SELECT 1 FROM invoices j WHERE j.customer_id=i.customer_id AND j.${VALID_INV} AND j.date BETWEEN ? AND ?${b ? ` AND j.branch_id=${Number(b)}` : ''})`, from, to, prevFrom, prevTo).n;
   const rev = revenue(b, from, to);
   return {
-    new_customers: newCustomers, visitors: visitors.length, returning, first_time: visitors.length - returning,
-    retention_rate: prev.length ? money((retained / prev.length) * 100) : null,
+    new_customers: newCustomers, visitors, returning, first_time: visitors - returning,
+    retention_rate: prev ? money((retained / prev) * 100) : null,
     avg_spend: rev.customers ? money(rev.total / rev.customers) : 0,
   };
 }

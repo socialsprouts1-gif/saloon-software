@@ -21,7 +21,7 @@ export default function PublicBooking() {
 
   useEffect(() => {
     api.get(`/api/public/book/${token}`).then((d) => {
-      setInfo(d); setSel((s) => ({ ...s, branch_id: d.branches[0]?.id }));
+      setInfo(d); setSel((s) => ({ ...s, branch_id: d.branches[0]?.id, date: d.today || s.date }));
       document.title = `Book at ${d.salon.name}`;
       const key = `tracked-${token}-${via}-${today()}`;
       try { if (!sessionStorage.getItem(key)) { api.post(`/api/public/book/${token}/track`, { type: via === 'qr' ? 'scan' : 'visit' }); if (via === 'qr') api.post(`/api/public/book/${token}/track`, { type: 'visit' }); sessionStorage.setItem(key, '1'); } }
@@ -35,7 +35,8 @@ export default function PublicBooking() {
   const chosen = services.filter((s) => sel.service_ids.includes(s.id));
   const total = chosen.reduce((a, s) => a + s.price, 0), dur = chosen.reduce((a, s) => a + s.duration_min, 0);
   const stylists = (info?.employees || []).filter((e) => e.branch_id === sel.branch_id && sel.service_ids.every((id) => e.services.includes(id)));
-  const dates = useMemo(() => Array.from({ length: Math.min(info?.booking.max_advance_days || 30, 30) + 1 }, (_, i) => addDays(today(), i)), [info]);
+  const salonToday = info?.today || today();
+  const dates = useMemo(() => Array.from({ length: Math.min(info?.booking.max_advance_days || 30, 30) + 1 }, (_, i) => addDays(salonToday, i)), [info]); // eslint-disable-line
 
   useEffect(() => {
     if (step !== 2 || !sel.service_ids.length) return;
@@ -151,7 +152,7 @@ export default function PublicBooking() {
 
           {step === 2 && <>
             <h2 className="display" style={{ fontSize: 21, marginBottom: 14 }}>Pick a date & time</h2>
-            <div className="date-strip">{dates.map((d) => { const dt = parseDate(d); return <button key={d} className={`date-pill ${sel.date === d ? 'on' : ''}`} onClick={() => setSel({ ...sel, date: d, time: '' })}><span className="w">{d === today() ? 'Today' : dt.toLocaleDateString('en-IN', { weekday: 'short' })}</span><span className="d">{dt.getDate()}</span><span className="w">{dt.toLocaleDateString('en-IN', { month: 'short' })}</span></button>; })}</div>
+            <div className="date-strip">{dates.map((d) => { const dt = parseDate(d); return <button key={d} className={`date-pill ${sel.date === d ? 'on' : ''}`} onClick={() => setSel({ ...sel, date: d, time: '' })}><span className="w">{d === salonToday ? 'Today' : dt.toLocaleDateString('en-IN', { weekday: 'short' })}</span><span className="d">{dt.getDate()}</span><span className="w">{dt.toLocaleDateString('en-IN', { month: 'short' })}</span></button>; })}</div>
             <div className="mt">{!slots ? <div className="row"><Spinner /> <span className="muted small">Finding free times…</span></div>
               : slots.closed ? <p className="muted">{slots.closed}</p>
                 : !slots.slots.length ? <p className="muted">No free times on this day — please try another date{sel.employee_id ? ' or choose “Any available stylist”' : ''}.</p>

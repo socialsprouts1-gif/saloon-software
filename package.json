@@ -5,19 +5,21 @@
   "description": "Salon management ERP: appointments, QR booking, POS, staff, attendance, payroll, inventory, expenses, CRM, analytics and AI assistant.",
   "type": "module",
   "scripts": {
-    "dev:server": "node --watch --disable-warning=ExperimentalWarning server/index.js",
+    "dev:server": "node --watch server/index.js",
     "dev:client": "npm --prefix client run dev",
     "build": "npm --prefix client install && npm --prefix client run build",
-    "start": "node --disable-warning=ExperimentalWarning server/index.js",
-    "seed": "node --disable-warning=ExperimentalWarning server/seed.js",
-    "test": "node --disable-warning=ExperimentalWarning --test server/test/*.test.js"
+    "start": "node server/index.js",
+    "seed": "node server/seed.js",
+    "test": "node --test server/test/*.test.js"
   },
   "engines": {
-    "node": ">=22.13"
+    "node": ">=20"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.4.0",
+    "@vercel/blob": "^2.8.2",
     "express": "^5.3.0",
+    "libsql": "^0.5.29",
     "multer": "^2.5.0",
     "zod": "^4.6.7"
   }

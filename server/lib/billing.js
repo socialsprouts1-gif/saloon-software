@@ -1,4 +1,4 @@
-import { all, get, insert, run, tx, update, getSettings } from '../db.js';
+import { all, get, insert, run, tx, update, getSettings, nowStamp } from '../db.js';
 import { HttpError, money, today, addDays, localISO } from './util.js';
 import { randomToken } from './auth.js';
 import { notify } from './util.js';
@@ -158,7 +158,7 @@ export function createInvoice(input, user) {
       const emp = l.employee_id ? get('SELECT * FROM employees WHERE id=?', l.employee_id) : null;
       insert('invoice_items', { invoice_id: id, ...l, commission_amount: commissionFor(l, emp) });
       if (l.item_type === 'product') {
-        run('UPDATE products SET stock = stock - ?, updated_at=datetime(\'now\',\'localtime\') WHERE id=?', l.qty, l.ref_id);
+        run('UPDATE products SET stock = stock - ?, updated_at=? WHERE id=?', l.qty, nowStamp(), l.ref_id);
         const p = get('SELECT stock, min_stock, name, branch_id FROM products WHERE id=?', l.ref_id);
         insert('stock_movements', { product_id: l.ref_id, branch_id: p.branch_id, type: 'sale', qty: -l.qty, reason: 'POS sale', invoice_id: id, user_id: user?.id, balance_after: p.stock });
         if (p.stock <= p.min_stock) notify({ type: 'low_stock', title: p.stock <= 0 ? `Out of stock: ${p.name}` : `Low stock: ${p.name}`, message: `${p.stock} left (minimum ${p.min_stock})`, link: '/inventory', branchId: p.branch_id, dedupeKey: `stock-${l.ref_id}-${p.stock}` });
@@ -178,7 +178,7 @@ export function createInvoice(input, user) {
       insert('coupon_usages', { coupon_id: priced.coupon.id, invoice_id: id, customer_id: input.customerId || null, discount: priced.coupon_discount, invoice_total: priced.total });
     }
     if (priced.loyalty_redeemed) run('UPDATE customers SET loyalty_points = loyalty_points - ? WHERE id=?', priced.loyalty_redeemed, input.customerId);
-    if (input.appointmentId) run(`UPDATE appointments SET status='completed', invoice_id=?, updated_at=datetime('now','localtime') WHERE id=?`, id, input.appointmentId);
+    if (input.appointmentId) run(`UPDATE appointments SET status='completed', invoice_id=?, updated_at=? WHERE id=?`, id, nowStamp(), input.appointmentId);
     if (status === 'paid') onInvoicePaid(id);
     return id;
   });

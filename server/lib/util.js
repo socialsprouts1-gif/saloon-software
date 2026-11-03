@@ -1,4 +1,4 @@
-import { insert, run } from '../db.js';
+import { insert, run, nowStamp } from '../db.js';
 
 export class HttpError extends Error {
   constructor(status, message, details) { super(message); this.status = status; this.details = details; }
@@ -75,7 +75,7 @@ export function audit(req, action, entity, entityId, details) {
 /** Create an in-app notification. dedupeKey prevents repeats from scheduled jobs. */
 export function notify({ type, title, message, link, branchId = null, dedupeKey = null }) {
   try {
-    run(`INSERT OR IGNORE INTO notifications (type,title,message,link,branch_id,dedupe_key) VALUES (?,?,?,?,?,?)`,
-      type, title, message ?? null, link ?? null, branchId, dedupeKey);
+    run(`INSERT OR IGNORE INTO notifications (type,title,message,link,branch_id,dedupe_key,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`,
+      type, title, message ?? null, link ?? null, branchId, dedupeKey, nowStamp(), nowStamp());
   } catch (e) { console.error('notify failed', e.message); }
 }

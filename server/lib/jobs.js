@@ -1,4 +1,4 @@
-import { all, get, insert, run, getSettings } from '../db.js';
+import { all, get, insert, run, getSettings, getMeta, setMeta } from '../db.js';
 import { today, addDays, addMinutes, localISO, toMin, notify, money } from './util.js';
 import { offDutyReason, isHoliday } from './scheduling.js';
 
@@ -67,8 +67,16 @@ export function runNotificationJobs() {
   }
 }
 
+/** Run the jobs if they haven't run in the last 5 minutes (works without a long-running process). */
+export function runJobsIfDue(force = false) {
+  const last = Number(getMeta('jobs_last_run') || 0);
+  if (!force && Date.now() - last < 5 * 60 * 1000) return false;
+  setMeta('jobs_last_run', Date.now()); // claim the run first so parallel requests don't repeat it
+  try { runRecurringExpenses(); runNotificationJobs(); } catch (e) { console.error('job error', e); }
+  return true;
+}
+
 export function startJobs() {
-  const tick = () => { try { runRecurringExpenses(); runNotificationJobs(); } catch (e) { console.error('job error', e); } };
-  tick();
-  return setInterval(tick, 5 * 60 * 1000).unref();
+  runJobsIfDue(true);
+  return setInterval(() => runJobsIfDue(), 5 * 60 * 1000).unref();
 }

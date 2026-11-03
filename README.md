@@ -4,7 +4,7 @@ A complete salon management system: appointments, QR online booking, POS billing
 
 ## Quick start
 
-Requires **Node.js 22.13+** (uses Node's built-in SQLite — nothing native to compile).
+Requires **Node.js 20+**. Locally the data lives in a single SQLite file; on Vercel it lives in a hosted Turso database.
 
 ```bash
 npm install
@@ -66,8 +66,11 @@ End-to-end workflow tests run against a throwaway database: double-booking preve
 | --- | --- | --- |
 | `PORT` | `4000` | HTTP port |
 | `DATA_DIR` | `./data` | Database, uploads and signing secret |
-| `TZ` | `Asia/Kolkata` | Salon time zone for all date maths |
-| `JWT_SECRET` | auto-generated in `data/.secret` | Session signing key |
+| `SALON_TZ` | `Asia/Kolkata` | Salon time zone for all date maths |
+| `TURSO_DATABASE_URL` / `TURSO_AUTH_TOKEN` | — | Hosted database (required on Vercel) |
+| `BLOB_READ_WRITE_TOKEN` | — | Vercel Blob store for logos, photos and receipts (added automatically when you connect a Blob store) |
+| `CRON_SECRET` | — | Optional; protects the daily `/api/cron` reminder job |
+| `JWT_SECRET` | auto-generated and stored in the database | Session signing key |
 | `AUTO_LOGIN` | on for this computer only | `0` disables automatic owner sign-in; `1` allows it from any machine (testing only) |
 | `ANTHROPIC_API_KEY` | — | Optional; enables Claude for the AI assistant (can also be set in Settings) |
 
@@ -116,15 +119,20 @@ Without an API key, a built-in engine answers the common questions (revenue, top
 
 By default the app creates ready-to-send WhatsApp click-to-chat links (invoice sharing, confirmations). Add a WhatsApp Cloud API phone number ID and token in **Settings → WhatsApp** to send booking confirmations automatically.
 
-## Deploying
+## Deploying to Vercel
 
-The server keeps its database and uploads on disk and runs background reminders, so it needs a host with a **persistent disk** (Railway, Render, Fly.io or a VPS). Vercel can host the screens only.
+The whole app (screens + API) deploys as one Vercel project. `vercel.json` builds the client, serves the API from `api/index.js`, and schedules a daily reminder job.
 
-**Server on Railway** (`railway.json` sets build/start commands):
+1. **Database (Turso, free tier):** create a database at turso.tech, choosing the region closest to your Vercel functions (e.g. Mumbai for `bom1`). Copy its URL (`libsql://…`) and create an auth token.
+2. **Vercel project:** import this repo with **Root Directory left empty** (the repository root, not `client`). Framework preset: Other.
+3. **Environment variables** (Settings → Environment Variables): `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, and a long random `JWT_SECRET`. Optionally `ANTHROPIC_API_KEY` and `CRON_SECRET`.
+4. **File uploads:** Storage → Create → Blob → connect it to the project (adds `BLOB_READ_WRITE_TOKEN`).
+5. **Deploy**, open the site and complete “Set up your salon”. Ticking demo data loads ~90 days of sample activity.
 
-1. New Project → Deploy from GitHub → this repo.
-2. Add a Volume mounted at `/data`.
-3. Variables: `DATA_DIR=/data`, `TZ=Asia/Kolkata`, `JWT_SECRET=<long random text>`, optionally `ANTHROPIC_API_KEY`.
-4. Settings → Networking → Generate Domain. The whole app already works at that address.
+Notes:
+- Reminders (upcoming appointments, low stock, birthdays, recurring expenses) run whenever staff use the app (at most every 5 minutes) plus once a day via Vercel Cron.
+- Uploads are limited to 4 MB on Vercel.
+- Automatic owner sign-in never applies on Vercel; staff log in normally.
+- To load demo data into an existing hosted database from your computer: `TURSO_DATABASE_URL=… TURSO_AUTH_TOKEN=… npm run seed` (this wipes it first).
 
-**Optional: screens on Vercel** (project root `client`): replace both `YOUR-BACKEND-URL` entries in `client/vercel.json` with the Railway domain (e.g. `salon-erp.up.railway.app`) and redeploy. Vercel then forwards `/api` and `/uploads` to the server.
+The app also runs on any Node host with a persistent disk (no Turso needed): `npm install && npm run build && npm start`, with `DATA_DIR` pointing at the disk.

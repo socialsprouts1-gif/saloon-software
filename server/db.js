@@ -1,16 +1,27 @@
-import { DatabaseSync } from 'node:sqlite';
+import './tz.js';
+import Database from 'libsql';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+export const IS_VERCEL = !!process.env.VERCEL;
+// A hosted libSQL/Turso database is used when its URL is set (required on Vercel); otherwise a local file.
+const REMOTE_URL = process.env.TURSO_DATABASE_URL || process.env.LIBSQL_URL;
+export const IS_REMOTE = !!REMOTE_URL;
+if (IS_VERCEL && !IS_REMOTE) {
+  throw new Error('Database not configured: add TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in Vercel → Settings → Environment Variables.');
+}
 export const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 export const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+if (!IS_VERCEL) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const DB_FILE = process.env.DB_FILE || path.join(DATA_DIR, 'salon.db');
-export const db = new DatabaseSync(DB_FILE);
-db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+export let db = IS_REMOTE
+  ? new Database(REMOTE_URL, { authToken: process.env.TURSO_AUTH_TOKEN || process.env.LIBSQL_AUTH_TOKEN })
+  : new Database(DB_FILE);
+if (!IS_REMOTE) db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
+try { db.exec('PRAGMA foreign_keys = ON;'); } catch { /* not supported by every host */ }
 
 const TS = `created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))`;
 
@@ -194,6 +205,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   id INTEGER PRIMARY KEY, user_id INTEGER, user_name TEXT, action TEXT NOT NULL, entity TEXT NOT NULL,
   entity_id INTEGER, details TEXT, branch_id INTEGER, ip TEXT, ${TS});
 
+CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
 CREATE TABLE IF NOT EXISTS message_log (
   id INTEGER PRIMARY KEY, channel TEXT NOT NULL, recipient TEXT, body TEXT, status TEXT, error TEXT, ${TS});
 `;
@@ -204,18 +217,63 @@ const ensureColumns = {
   invoices: { loyalty_earned: 'INTEGER NOT NULL DEFAULT 0', loyalty_value: 'REAL NOT NULL DEFAULT 0', void_reason: 'TEXT' },
 };
 for (const [table, cols] of Object.entries(ensureColumns)) {
-  const have = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+  const have = new Set(db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all().map((c) => c.name));
   for (const [col, def] of Object.entries(cols)) if (!have.has(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
 }
 
 // ---- tiny query helpers -------------------------------------------------
-export const all = (sql, ...p) => db.prepare(sql).all(...p);
-export const get = (sql, ...p) => db.prepare(sql).get(...p);
-export const run = (sql, ...p) => db.prepare(sql).run(...p);
-export const scalar = (sql, ...p) => { const r = db.prepare(sql).get(...p); return r ? Object.values(r)[0] : null; };
+// Prepared statements are cached (saves a round trip per query on a hosted database).
+const stmts = new Map();
+const stmt = (sql) => {
+  let s = stmts.get(sql);
+  if (!s) { if (stmts.size > 500) stmts.clear(); s = db.prepare(sql); stmts.set(sql, s); }
+  return s;
+};
+const bind = (p) => p.map((v) => (typeof v === 'boolean' ? (v ? 1 : 0) : v === undefined ? null : v));
+// libsql attaches a _metadata field to each row; drop it so rows stay plain records
+const clean = (r) => { if (r && '_metadata' in r) delete r._metadata; return r; };
+export const all = (sql, ...p) => { const rows = stmt(sql).all(...bind(p)); for (const r of rows) clean(r); return rows; };
+export const get = (sql, ...p) => clean(stmt(sql).get(...bind(p)));
+export const run = (sql, ...p) => stmt(sql).run(...bind(p));
+export const scalar = (sql, ...p) => { const r = get(sql, ...p); return r ? Object.values(r)[0] : null; };
+
+/**
+ * Run fn against a fresh in-memory database (all helpers point at it meanwhile) and return it.
+ * Used to build demo data quickly before copying it to a hosted database in bulk.
+ */
+export function withScratchDatabase(fn) {
+  const target = db;
+  const scratch = new Database(':memory:');
+  scratch.exec(schema);
+  db = scratch; stmts.clear();
+  try { fn(); } finally { db = target; stmts.clear(); }
+  return scratch;
+}
+
+/** Copy every row from another database into the current one using multi-row inserts. */
+export function copyDatabaseFrom(source, { skip = ['app_meta'] } = {}) {
+  const tables = source.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY rowid`).all().map((t) => t.name).filter((t) => !skip.includes(t));
+  tx(() => {
+    for (const t of tables) {
+      const rows = source.prepare(`SELECT * FROM ${t}`).all();
+      if (!rows.length) continue;
+      const cols = Object.keys(rows[0]).filter((c) => c !== '_metadata');
+      const per = Math.max(1, Math.min(500, Math.floor(2000 / cols.length))); // keep each request small
+      for (let i = 0; i < rows.length; i += per) {
+        const chunk = rows.slice(i, i + per);
+        const sql = `INSERT OR REPLACE INTO ${t} (${cols.join(',')}) VALUES ${chunk.map(() => `(${cols.map(() => '?').join(',')})`).join(',')}`;
+        db.prepare(sql).run(...chunk.flatMap((r) => cols.map((c) => r[c] ?? null)));
+      }
+    }
+  });
+}
+
+/** Small key/value store for internal state (signing secret, job timestamps). Never exposed via settings. */
+export const getMeta = (key) => get('SELECT value FROM app_meta WHERE key=?', key)?.value ?? null;
+export const setMeta = (key, value) => run('INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, String(value));
 
 let txDepth = 0;
-/** Runs fn inside a transaction (nesting-safe). node:sqlite is synchronous, so this is atomic. */
+/** Runs fn inside a transaction (nesting-safe). The driver is synchronous, so this is atomic. */
 export function tx(fn) {
   if (txDepth > 0) return fn();
   db.exec('BEGIN IMMEDIATE');
@@ -225,8 +283,23 @@ export function tx(fn) {
   finally { txDepth--; }
 }
 
+/**
+ * Current salon-local time as 'YYYY-MM-DD HH:MM:SS'. Timestamps are always set from here rather
+ * than SQLite's datetime('now','localtime'), because a hosted database runs on UTC.
+ */
+export function nowStamp(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+const colCache = new Map();
+const hasCol = (table, col) => {
+  if (!colCache.has(table)) colCache.set(table, new Set(all(`SELECT name FROM pragma_table_info('${table}')`).map((c) => c.name)));
+  return colCache.get(table).has(col);
+};
+
 /** Build an INSERT from an object; returns new id. */
 export function insert(table, obj) {
+  if (hasCol(table, 'created_at')) obj = { created_at: nowStamp(), updated_at: nowStamp(), ...obj };
   const keys = Object.keys(obj).filter((k) => obj[k] !== undefined);
   const sql = `INSERT INTO ${table} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`;
   return Number(run(sql, ...keys.map((k) => norm(obj[k]))).lastInsertRowid);
@@ -235,7 +308,7 @@ export function insert(table, obj) {
 export function update(table, id, obj) {
   const keys = Object.keys(obj).filter((k) => obj[k] !== undefined);
   if (!keys.length) return;
-  run(`UPDATE ${table} SET ${keys.map((k) => `${k}=?`).join(',')}, updated_at=datetime('now','localtime') WHERE id=?`, ...keys.map((k) => norm(obj[k])), id);
+  run(`UPDATE ${table} SET ${keys.map((k) => `${k}=?`).join(',')}, updated_at=? WHERE id=?`, ...keys.map((k) => norm(obj[k])), nowStamp(), id);
 }
 const norm = (v) => (typeof v === 'boolean' ? (v ? 1 : 0) : v === '' ? null : v);
 
@@ -265,5 +338,5 @@ export function getSettings() {
   return s;
 }
 export function setSetting(key, value) {
-  run(`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=datetime('now','localtime')`, key, JSON.stringify(value));
+  run(`INSERT INTO settings(key,value,created_at,updated_at) VALUES(?,?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`, key, JSON.stringify(value), nowStamp(), nowStamp());
 }

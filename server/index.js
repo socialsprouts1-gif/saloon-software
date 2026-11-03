@@ -1,4 +1,4 @@
-process.env.TZ ||= 'Asia/Kolkata'; // salon-local time for all date maths
+import './tz.js';
 
 import express from 'express';
 import path from 'node:path';
@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { authenticate } from './lib/auth.js';
 import { HttpError } from './lib/util.js';
-import { startJobs } from './lib/jobs.js';
+import { startJobs, runJobsIfDue } from './lib/jobs.js';
 import authRoutes from './routes/auth.js';
 import coreRoutes, { PUBLIC_DIR } from './routes/core.js';
 import appointmentRoutes, { bookingRouter } from './routes/appointments.js';
@@ -32,6 +32,11 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '1mb' }));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+// Daily Vercel Cron (see vercel.json). Vercel sends "Authorization: Bearer $CRON_SECRET" when that variable is set.
+app.get('/api/cron', (req, res) => {
+  if (process.env.CRON_SECRET && req.headers.authorization !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).json({ error: 'Unauthorized' });
+  res.json({ ran: runJobsIfDue() });
+});
 app.use('/api/auth', authRoutes);
 app.use('/api/public', publicRoutes);
 app.use('/uploads', express.static(PUBLIC_DIR, { maxAge: '7d', fallthrough: false }));

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { all, get, getSettings } from '../db.js';
 import { requirePerm } from '../lib/auth.js';
-import { h, parse, HttpError, audit, paginate, money } from '../lib/util.js';
+import { h, parse, HttpError, audit, paginate, money, today, addDays } from '../lib/util.js';
 import { priceCart, createInvoice, addPayment, voidInvoice, invoiceDetail, PAYMENT_METHODS } from '../lib/billing.js';
 import { waLink } from '../lib/messaging.js';
 import { resolveBranch } from './appointments.js';
@@ -101,7 +101,7 @@ r.post('/:id/void', h((req, res) => {
 r.get('/meta/billable-appointments', h((req, res) => {
   res.json(all(`SELECT a.id, a.start_at, a.status, a.customer_id, a.employee_id, c.name customer_name, c.phone customer_phone, e.name employee_name
     FROM appointments a JOIN customers c ON c.id=a.customer_id LEFT JOIN employees e ON e.id=a.employee_id
-    WHERE a.invoice_id IS NULL AND a.status IN ('confirmed','checked_in','in_progress','completed') AND substr(a.start_at,1,10) >= date('now','localtime','-2 day')
+    WHERE a.invoice_id IS NULL AND a.status IN ('confirmed','checked_in','in_progress','completed') AND substr(a.start_at,1,10) >= '${addDays(today(), -2)}'
     ${req.branchId ? 'AND a.branch_id=' + Number(req.branchId) : ''} ORDER BY a.start_at LIMIT 50`)
     .map((a) => ({ ...a, services: all('SELECT service_id, price FROM appointment_services WHERE appointment_id=?', a.id) })));
 }));

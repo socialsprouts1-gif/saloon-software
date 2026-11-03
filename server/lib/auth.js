@@ -1,15 +1,13 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import { DATA_DIR, get, getSettings } from '../db.js';
+import { get, getSettings, getMeta, run } from '../db.js';
 import { HttpError } from './util.js';
 
 // ---- secret -----------------------------------------------------------------
 function loadSecret() {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
-  const f = path.join(DATA_DIR, '.secret');
-  if (!fs.existsSync(f)) fs.writeFileSync(f, crypto.randomBytes(48).toString('hex'), { mode: 0o600 });
-  return fs.readFileSync(f, 'utf8').trim();
+  // Generated once and kept in the database, so it survives restarts and serverless cold starts
+  run('INSERT OR IGNORE INTO app_meta(key,value) VALUES(?,?)', 'jwt_secret', crypto.randomBytes(48).toString('hex'));
+  return getMeta('jwt_secret');
 }
 const SECRET = loadSecret();
 const TOKEN_TTL_SEC = 60 * 60 * 12;
