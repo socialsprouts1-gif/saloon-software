@@ -115,3 +115,16 @@ Without an API key, a built-in engine answers the common questions (revenue, top
 ## WhatsApp
 
 By default the app creates ready-to-send WhatsApp click-to-chat links (invoice sharing, confirmations). Add a WhatsApp Cloud API phone number ID and token in **Settings → WhatsApp** to send booking confirmations automatically.
+
+## Deploying
+
+The server keeps its database and uploads on disk and runs background reminders, so it needs a host with a **persistent disk** (Railway, Render, Fly.io or a VPS). Vercel can host the screens only.
+
+**Server on Railway** (`railway.json` sets build/start commands):
+
+1. New Project → Deploy from GitHub → this repo.
+2. Add a Volume mounted at `/data`.
+3. Variables: `DATA_DIR=/data`, `TZ=Asia/Kolkata`, `JWT_SECRET=<long random text>`, optionally `ANTHROPIC_API_KEY`.
+4. Settings → Networking → Generate Domain. The whole app already works at that address.
+
+**Optional: screens on Vercel** (project root `client`): replace both `YOUR-BACKEND-URL` entries in `client/vercel.json` with the Railway domain (e.g. `salon-erp.up.railway.app`) and redeploy. Vercel then forwards `/api` and `/uploads` to the server.
