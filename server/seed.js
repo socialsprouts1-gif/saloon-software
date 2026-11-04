@@ -1,6 +1,6 @@
 import './tz.js';
 import { fileURLToPath } from 'node:url';
-import { db, all, get, insert, run, tx, setSetting, getSettings, IS_REMOTE, DEMO_MODE, withScratchDatabase, copyDatabaseFrom } from './db.js';
+import { all, get, insert, run, tx, setSetting, getSettings, IS_REMOTE, DEMO_MODE, withScratchDatabase, copyDatabaseFrom } from './db.js';
 import { hashPassword, randomToken } from './lib/auth.js';
 import { today, addDays, parseDate, toMin, fromMin, addMinutes, money } from './lib/util.js';
 import { createAppointment } from './lib/scheduling.js';
@@ -283,6 +283,23 @@ function generateDemo({ salonName = 'Lumière Salon & Spa', ownerName = 'Salon O
     }
     insert('salary_advances', { employee_id: emps.ravi, amount: 2000, date: addDays(T, -5), note: 'Medical emergency' });
 
+    // ---- loyalty stamp cards --------------------------------------------------------------------
+    const haircuts = [svc.menCut, svc.womenCut, svc.kidsCut];
+    const progs = [
+      insert('loyalty_programs', { name: 'Haircut Club', stamps_required: 4, reward: 'Free haircut on your 5th visit', eligible_service_ids: JSON.stringify(haircuts), color: '#6d2a52', terms: 'One stamp per paid haircut visit. Valid at all branches.', auto_stamp: 1, min_gap_hours: 2 }),
+      insert('loyalty_programs', { name: 'Glow Card', stamps_required: 6, reward: 'Free Express Cleanup', reward_service_id: svc.cleanup, eligible_service_ids: JSON.stringify([svc.goldFacial, svc.hydraFacial, svc.cleanup]), color: '#b9785a', terms: 'Stamp for every facial or cleanup.', auto_stamp: 1, min_gap_hours: 2 }),
+    ];
+    const ALPH = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    for (const c of customers.slice(0, Math.min(customers.length, 90))) {
+      const programId = chance(0.75) ? progs[0] : progs[1];
+      const code = Array.from({ length: 8 }, () => ALPH[int(0, ALPH.length - 1)]).join('');
+      const req = programId === progs[0] ? 4 : 6;
+      const stamps = int(0, req), redeemed = chance(0.3) ? int(1, 2) : 0;
+      const issued = addDays(T, -int(10, 120)), last = stamps ? addDays(T, -int(0, 25)) : null;
+      const cardId = insert('loyalty_cards', { program_id: programId, customer_id: c.id, code, stamps, rewards_redeemed: redeemed, last_stamp_at: last ? `${last} 12:30:00` : null, created_at: `${issued} 11:00:00` });
+      for (let k = 1; k <= stamps; k++) insert('loyalty_events', { card_id: cardId, type: 'stamp', user_name: 'Ananya Sharma', stamps_after: k, created_at: `${addDays(issued, k * 7 > 100 ? 100 : k * 7)} 12:30:00` });
+    }
+
     // ---- QR booking analytics ----------------------------------------------------------------------------------
     for (let back = DAYS; back >= 0; back--) {
       const day = addDays(T, -back);
@@ -297,15 +314,20 @@ function generateDemo({ salonName = 'Lumière Salon & Spa', ownerName = 'Salon O
   return { email, password, staffPassword: DEMO_STAFF_PASSWORD };
 }
 
-/** CLI: `npm run seed` wipes the database and loads demo data. */
+/** CLI: `npm run seed` (re)creates the "lumiere" demo salon on the platform. Other salons are untouched. */
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const tables = all(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`).map((t) => t.name);
-  db.exec('PRAGMA foreign_keys=OFF');
-  for (const t of tables) db.exec(`DELETE FROM ${t}`);
-  db.exec('PRAGMA foreign_keys=ON');
+  // Created directly here (not via routes/auth.js, which imports this file) to avoid an import cycle
+  const { tenantBySlug, deleteTenant, createTenant, reindexTenant } = await import('./platform.js');
+  const { pget, prun, nowStamp, runInTenant } = await import('./db.js');
+  const old = tenantBySlug('lumiere');
+  if (old) deleteTenant(old.id);
   const t0 = Date.now();
-  const r = seedDemo({});
-  console.log(`Demo data loaded in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-  console.log(`Owner login:  ${r.email} / ${r.password}`);
-  console.log(`Staff logins: manager@demo.salon, reception@demo.salon, accounts@demo.salon, stylist@demo.salon / ${r.staffPassword}`);
+  const t = await createTenant({ name: 'Lumière Salon & Spa', slug: 'lumiere', ownerName: 'Salon Owner', ownerEmail: 'owner@demo.salon', city: 'Bengaluru', plan: 'pro' });
+  runInTenant(t, () => seedDemo({}));
+  await reindexTenant(t);
+  if (!pget('SELECT id FROM platform_admins LIMIT 1')) prun('INSERT INTO platform_admins (name,email,password_hash,created_at) VALUES (?,?,?,?)', 'Platform Admin', 'admin@salonstudio.demo', hashPassword('Admin@1234'), nowStamp());
+  console.log(`Demo salon loaded in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  console.log('Salon owner:   owner@demo.salon / Owner@1234');
+  console.log(`Staff logins:  manager@demo.salon, reception@demo.salon, accounts@demo.salon, stylist@demo.salon / ${DEMO_STAFF_PASSWORD}`);
+  console.log('Platform admin (if newly created): admin@salonstudio.demo / Admin@1234 → /platform');
 }

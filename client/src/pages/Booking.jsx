@@ -28,7 +28,7 @@ async function drawQR(canvas, url, { logo, color, initial, withLogo }) {
 
 export default function Booking() {
   const { data, loading, error, reload, setData } = useApi('/api/settings');
-  const { salon, can } = useAuth();
+  const { salon, can, tenant } = useAuth();
   const toast = useToast();
   const confirm = useConfirm();
   const canvas = useRef(null);
@@ -36,7 +36,7 @@ export default function Booking() {
   const from = { last7: addDays(today(), -6), last30: addDays(today(), -29), last90: addDays(today(), -89), all: undefined }[period];
   const stats = useApi('/api/booking/stats', { from, to: from ? today() : undefined });
   const b = data?.settings.booking;
-  const bookingUrl = b?.token ? `${window.location.origin}/book/${b.token}` : '';
+  const bookingUrl = b?.token ? `${window.location.origin}/s/${tenant?.slug}/book/${b.token}` : '';
   const qrUrl = bookingUrl ? `${bookingUrl}?src=qr` : '';
 
   useEffect(() => {

@@ -2,23 +2,24 @@ import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, CalendarDays, QrCode, Receipt, Users, Scissors, Gift, TicketPercent, UserCog, Clock, Wallet, Package, CreditCard,
-  BarChart3, Bell, Building2, Settings, Sparkles, Menu, Sun, Moon, Monitor, LogOut, KeyRound, ShoppingBag, FileText,
+  BarChart3, Bell, Building2, Settings, Sparkles, Menu, Sun, Moon, Monitor, LogOut, KeyRound, ShoppingBag, FileText, ScanLine, ShieldAlert,
 } from 'lucide-react';
 import { useAuth, useTheme, useToast } from '../context.jsx';
 import { api } from '../lib/api.js';
 import { relTime } from '../lib/format.js';
 import { Avatar, Button, Dropdown, Modal, Input } from './ui.jsx';
 import AIPanel from './AIPanel.jsx';
+import { ScannerModal } from './Loyalty.jsx';
 
 const NAV = [
   ['Overview', [['/', 'Dashboard', LayoutDashboard, 'dashboard']]],
   ['Front desk', [
     ['/appointments', 'Appointments', CalendarDays, 'appointments'], ['/pos', 'Billing / POS', ShoppingBag, 'billing'], ['/invoices', 'Invoices', FileText, 'billing'],
-    ['/customers', 'Customers', Users, 'customers'], ['/booking', 'QR Booking', QrCode, 'booking'],
+    ['/customers', 'Customers', Users, 'customers'], ['/loyalty', 'Loyalty Cards', CreditCard, 'loyalty'], ['/booking', 'QR Booking', QrCode, 'booking'],
   ]],
   ['Catalogue', [['/services', 'Services', Scissors, 'services'], ['/packages', 'Packages', Gift, 'packages'], ['/coupons', 'Coupons', TicketPercent, 'coupons'], ['/inventory', 'Inventory', Package, 'inventory']]],
   ['Team', [['/employees', 'Employees', UserCog, 'employees'], ['/attendance', 'Attendance', Clock, 'attendance'], ['/payroll', 'Payroll', Wallet, 'payroll']]],
-  ['Finance', [['/expenses', 'Expenses', CreditCard, 'expenses'], ['/reports', 'Reports', BarChart3, 'reports']]],
+  ['Finance', [['/expenses', 'Expenses', Wallet, 'expenses'], ['/reports', 'Reports', BarChart3, 'reports']]],
   ['Admin', [['/assistant', 'AI Assistant', Sparkles, 'ai'], ['/notifications', 'Notifications', Bell, 'notifications'], ['/branches', 'Branches', Building2, 'branches'], ['/settings', 'Settings', Settings, 'settings']]],
 ];
 
@@ -28,6 +29,7 @@ export default function Layout() {
   const [navOpen, setNavOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [pwOpen, setPwOpen] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
   const loc = useLocation();
   const navigate = useNavigate();
   useEffect(() => setNavOpen(false), [loc.pathname]);
@@ -38,7 +40,7 @@ export default function Layout() {
       <aside className="sidebar" aria-label="Main navigation">
         <div className="brand">
           <div className="brand-mark">{salon?.logo ? <img src={salon.logo} alt="" /> : (salon?.name || 'S')[0]}</div>
-          <div><div className="brand-name">{salon?.name}</div><div className="brand-sub">Salon Studio ERP</div></div>
+          <div><div className="brand-name">{salon?.name}</div><div className="brand-sub">Salon Studio</div></div>
         </div>
         <nav className="nav">
           {NAV.map(([group, items]) => {
@@ -68,6 +70,7 @@ export default function Layout() {
             </div>
           ) : <span className="badge plain plum hide-sm"><Building2 size={12} /> {branchName}</span>}
           <div className="grow" />
+          {(can('loyalty') || can('billing')) && <Button size="sm" icon={ScanLine} onClick={() => setScanOpen(true)} title="Scan a loyalty card QR">Scan</Button>}
           {can('billing') && <Button variant="primary" size="sm" icon={Receipt} onClick={() => navigate('/pos')} className="hide-sm">New bill</Button>}
           <Dropdown trigger={({ toggle }) => <Button variant="ghost" icon={ThemeIcon} onClick={toggle} aria-label="Theme" />}>
             {[['light', 'Light', Sun], ['dark', 'Dark', Moon], ['system', 'System', Monitor]].map(([k, l, I]) => <button key={k} className="item" onClick={() => setTheme(k)}><I size={15} />{l}{theme === k && ' ✓'}</button>)}
@@ -79,6 +82,7 @@ export default function Layout() {
             <button className="item" onClick={logout}><LogOut size={15} />Sign out</button>
           </Dropdown>
         </header>
+        {user.impersonated_by && <div className="no-print" style={{ background: 'var(--warning-soft)', color: 'var(--warning)', padding: '8px 28px', fontSize: 13, display: 'flex', gap: 8, alignItems: 'center' }}><ShieldAlert size={15} />Platform support access — you're viewing this salon as its owner. <a href="/platform" style={{ marginLeft: 'auto' }} onClick={logout}>Back to platform panel</a></div>}
         <main className="content"><Outlet /></main>
       </div>
       {can('ai') && <>
@@ -86,6 +90,7 @@ export default function Layout() {
         <button className="ai-fab no-print" onClick={() => setAiOpen((o) => !o)} aria-label="Open AI assistant" title="AI assistant"><Sparkles /></button>
       </>}
       <ChangePassword open={pwOpen} onClose={() => setPwOpen(false)} />
+      <ScannerModal open={scanOpen} onClose={() => setScanOpen(false)} onCode={(code) => { setScanOpen(false); navigate(`/loyalty?card=${code}`); }} />
     </div>
   );
 }

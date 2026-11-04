@@ -2,6 +2,7 @@ import { all, get, insert, run, tx, update, getSettings, nowStamp } from '../db.
 import { HttpError, money, today, addDays, localISO } from './util.js';
 import { randomToken } from './auth.js';
 import { notify } from './util.js';
+import { cardDetail, redeemReward, autoStampForInvoice, reverseInvoiceLoyalty } from './loyalty.js';
 
 export const PAYMENT_METHODS = ['cash', 'upi', 'card', 'bank_transfer', 'other'];
 
@@ -67,6 +68,16 @@ export function priceCart({ customerId, items, discount, couponCode, redeemPoint
         if (cr.status !== 'active' || cr.expires_at < today()) throw new HttpError(400, 'Package has expired');
         if (cr.total - cr.used < qty) throw new HttpError(400, `Only ${cr.total - cr.used} package credit(s) left for ${sv.name}`);
         unit = 0; name = `${sv.name} (package credit)`; meta.package_credit_id = cr.id;
+      }
+      if (it.use_reward_card_id) {
+        const card = get('SELECT code FROM loyalty_cards WHERE id=?', it.use_reward_card_id);
+        const c = card && cardDetail(card.code);
+        if (!c || c.customer_id !== customerId || c.status !== 'active') throw new HttpError(400, 'Loyalty card not valid for this customer');
+        if (!c.reward_ready) throw new HttpError(400, `${c.stamps_required - c.stamps} more visit(s) needed before the loyalty reward`);
+        if (c.reward_service_id && c.reward_service_id !== sv.id) throw new HttpError(400, `The loyalty reward is for ${c.reward_service_name}`);
+        if (!c.reward_service_id && c.eligible_service_ids.length && !c.eligible_service_ids.includes(sv.id)) throw new HttpError(400, 'This service is not covered by the loyalty reward');
+        if (qty !== 1) throw new HttpError(400, 'A loyalty reward covers one service');
+        unit = 0; name = `${sv.name} (loyalty reward)`; meta.reward_card_id = c.id;
       }
     } else if (it.type === 'product') {
       const p = get('SELECT * FROM products WHERE id=?', it.ref_id);
@@ -173,6 +184,10 @@ export function createInvoice(input, user) {
       }
     }
     for (const p of payments) insert('payments', { invoice_id: id, amount: money(p.amount), method: p.method, reference: p.reference || null, paid_at: localISO(), user_id: user?.id });
+    for (const l of priced.lines.filter((x) => x.reward_card_id)) {
+      redeemReward(get('SELECT code FROM loyalty_cards WHERE id=?', l.reward_card_id).code, { user, invoiceId: id, note: `Used on ${l.name}` });
+    }
+    autoStampForInvoice(id, user);
     if (priced.coupon) {
       run('UPDATE coupons SET used_count = used_count + 1 WHERE id=?', priced.coupon.id);
       insert('coupon_usages', { coupon_id: priced.coupon.id, invoice_id: id, customer_id: input.customerId || null, discount: priced.coupon_discount, invoice_total: priced.total });
@@ -229,6 +244,7 @@ export function voidInvoice(invoiceId, reason, user) {
       if (l.package_credit_id) run('UPDATE customer_package_credits SET used = MAX(0, used - ?) WHERE id=?', l.qty, l.package_credit_id);
     }
     run(`UPDATE customer_packages SET status='cancelled' WHERE invoice_id=?`, invoiceId);
+    reverseInvoiceLoyalty(invoiceId, user);
     if (inv.coupon_id) { run('UPDATE coupons SET used_count = MAX(0, used_count - 1) WHERE id=?', inv.coupon_id); run('DELETE FROM coupon_usages WHERE invoice_id=?', invoiceId); }
     if (inv.customer_id) run('UPDATE customers SET loyalty_points = MAX(0, loyalty_points + ? - ?) WHERE id=?', inv.loyalty_redeemed, inv.loyalty_earned, inv.customer_id);
     if (inv.appointment_id) run(`UPDATE appointments SET status='checked_in', invoice_id=NULL WHERE id=?`, inv.appointment_id);

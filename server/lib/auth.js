@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
-import { get, getSettings, getMeta, run, DEMO_MODE } from '../db.js';
+import { get, getSettings, DEMO_MODE, pgetMeta, prun, runInTenant } from '../db.js';
+import { tenantById } from '../platform.js';
 import { HttpError } from './util.js';
 
 // ---- secret -----------------------------------------------------------------
@@ -8,9 +9,9 @@ function loadSecret() {
   // Demo mode: every server instance builds its own sample database, so share one fixed key
   // to keep the demo signed in when Vercel moves it to another instance.
   if (DEMO_MODE) return 'salon-studio-public-demo';
-  // Generated once and kept in the database, so it survives restarts and serverless cold starts
-  run('INSERT OR IGNORE INTO app_meta(key,value) VALUES(?,?)', 'jwt_secret', crypto.randomBytes(48).toString('hex'));
-  return getMeta('jwt_secret');
+  // Generated once and kept in the platform database, so it survives restarts and serverless cold starts
+  prun('INSERT OR IGNORE INTO platform_meta(key,value) VALUES(?,?)', 'jwt_secret', crypto.randomBytes(48).toString('hex'));
+  return pgetMeta('jwt_secret');
 }
 const SECRET = loadSecret();
 const TOKEN_TTL_SEC = 60 * 60 * 12;
@@ -52,37 +53,55 @@ export const randomToken = (n = 12) => crypto.randomBytes(n).toString('base64url
 export const MODULES = [
   'dashboard', 'appointments', 'booking', 'customers', 'billing', 'services', 'packages', 'coupons',
   'employees', 'attendance', 'payroll', 'inventory', 'expenses', 'reports', 'finance', 'notifications',
-  'branches', 'settings', 'ai',
+  'branches', 'settings', 'ai', 'loyalty',
 ];
 export const ROLES = ['owner', 'manager', 'receptionist', 'accountant', 'employee'];
+// Modules that existed before role permissions could be customised; anything newer falls back to
+// its default until the owner saves permissions again.
+const LEGACY_MODULES = ['dashboard', 'appointments', 'booking', 'customers', 'billing', 'services', 'packages', 'coupons', 'employees', 'attendance', 'payroll', 'inventory', 'expenses', 'reports', 'finance', 'notifications', 'branches', 'settings', 'ai'];
 export const DEFAULT_PERMISSIONS = {
   owner: MODULES,
-  manager: ['dashboard', 'appointments', 'booking', 'customers', 'billing', 'services', 'packages', 'coupons', 'employees', 'attendance', 'inventory', 'reports', 'finance', 'notifications', 'ai'],
-  receptionist: ['dashboard', 'appointments', 'booking', 'customers', 'billing', 'packages', 'notifications'],
+  manager: ['dashboard', 'appointments', 'booking', 'customers', 'billing', 'services', 'packages', 'coupons', 'employees', 'attendance', 'inventory', 'reports', 'finance', 'notifications', 'ai', 'loyalty'],
+  receptionist: ['dashboard', 'appointments', 'booking', 'customers', 'billing', 'packages', 'notifications', 'loyalty'],
   accountant: ['dashboard', 'billing', 'expenses', 'payroll', 'reports', 'finance', 'notifications', 'ai'],
   employee: ['dashboard', 'appointments', 'attendance', 'notifications'],
 };
 export function permissionsFor(role) {
   if (role === 'owner') return MODULES; // owner can never be locked out
   const custom = getSettings().permissions;
-  return (custom && Array.isArray(custom[role])) ? custom[role] : DEFAULT_PERMISSIONS[role] || [];
+  const defaults = DEFAULT_PERMISSIONS[role] || [];
+  if (!custom || !Array.isArray(custom[role])) return defaults;
+  const known = custom._modules || LEGACY_MODULES;
+  return [...custom[role], ...defaults.filter((m) => !known.includes(m) && !custom[role].includes(m))];
 }
 
 // ---- middleware --------------------------------------------------------------
-export function authenticate(req, _res, next) {
+/**
+ * Signed-in salon staff: verify the token, select that salon's database for the rest of the
+ * request, and load the user. Platform-admin tokens (pid) are handled by the platform routes.
+ */
+export function authenticate(req, res, next) {
   const h = req.headers.authorization || '';
   const payload = verifyToken(h.startsWith('Bearer ') ? h.slice(7) : null);
-  if (!payload) return next(new HttpError(401, 'Please sign in again'));
+  if (!payload?.tid) return next(new HttpError(401, 'Please sign in again'));
+  const tenant = tenantById(payload.tid);
+  if (!tenant) return next(new HttpError(401, 'This salon no longer exists'));
+  if (tenant.status !== 'active') return next(new HttpError(403, 'This salon account is suspended. Contact the platform administrator.'));
+  runInTenant(tenant, () => {
+    try { loadUser(req, payload); next(); } catch (e) { next(e); }
+  });
+}
+function loadUser(req, payload) {
   const user = get('SELECT id,name,email,role,employee_id,branch_id,is_active FROM users WHERE id=?', payload.uid);
-  if (!user || !user.is_active) return next(new HttpError(401, 'Account disabled'));
+  if (!user || !user.is_active) throw new HttpError(401, 'Account disabled');
   user.permissions = permissionsFor(user.role);
+  user.impersonated_by = payload.imp || null;
   req.user = user;
   // Branch scope: users pinned to a branch always see that branch. Owners/unpinned users may pick one or "all".
   const requested = req.headers['x-branch-id'];
   if (user.branch_id) req.branchId = user.branch_id;
   else if (requested && requested !== 'all') req.branchId = Number(requested) || null;
   else req.branchId = null; // consolidated
-  next();
 }
 
 export const can = (user, mod) => user.permissions.includes(mod);

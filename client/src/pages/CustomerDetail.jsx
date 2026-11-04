@@ -1,6 +1,8 @@
 import { useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { Pencil, CalendarPlus, Receipt, MessageCircle, Star, Gift, Phone, Mail, Cake, ArrowLeft, Coins } from 'lucide-react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { StampCard, cardUrl } from '../components/Loyalty.jsx';
+import { CardDrawer, IssueModal } from './LoyaltyCards.jsx';
+import { Pencil, CalendarPlus, Receipt, MessageCircle, Star, Gift, Phone, Mail, Cake, ArrowLeft, Coins, CreditCard, Plus } from 'lucide-react';
 import { useApi, useAuth, useToast } from '../context.jsx';
 import { api } from '../lib/api.js';
 import { money, fmtDate, fmtDT, titleCase } from '../lib/format.js';
@@ -67,6 +69,7 @@ export default function CustomerDetail() {
           )) : <p className="faint small"><Gift size={14} /> No packages. Sell one from POS → Packages.</p>}
         </Card>
       </div>
+      <LoyaltySection customer={c} />
       <Card className="mt" pad={false}>
         <div style={{ padding: '6px 16px 0' }} className="row between"><Tabs value={tab} onChange={setTab} tabs={[['visits', 'Appointments', c.appointments.length], ...(c.invoices.length || can('billing') ? [['invoices', 'Invoices', c.invoices.length]] : []), ['feedback', 'Feedback', c.feedback.length]]} />
           {tab === 'feedback' && <Button size="sm" icon={Star} onClick={() => setFb(true)}>Add feedback</Button>}</div>
@@ -110,5 +113,32 @@ function PointsModal({ customer, onClose, onSaved }) {
         <Input label="Points to add (use negative to remove)" type="number" value={f.delta} onChange={(e) => setF({ ...f, delta: e.target.value })} />
         <Input label="Reason" value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} placeholder="e.g. Birthday bonus" /></div>
     </Modal>
+  );
+}
+
+/** Customer's loyalty stamp cards with QR, plus issuing a new card. */
+function LoyaltySection({ customer }) {
+  const { can, salon, tenant } = useAuth();
+  const cards = useApi('/api/loyalty/cards', { customer_id: customer.id, pageSize: 10 });
+  const programs = useApi('/api/loyalty/programs');
+  const [issue, setIssue] = useState(false);
+  const [open, setOpen] = useState(null);
+  if (!can('loyalty') && !can('billing') && !can('customers')) return null;
+  const active = (programs.data || []).filter((p) => p.is_active);
+  return (
+    <Card className="mt" title={<h2 className="row" style={{ gap: 8 }}><CreditCard size={16} />Loyalty stamp cards</h2>}
+      actions={active.length > 0 && <Button size="sm" icon={Plus} onClick={() => setIssue(true)}>Issue card</Button>}>
+      {!cards.data ? <Loader rows={2} /> : !cards.data.data.length ? (
+        <p className="faint small">{active.length ? 'No loyalty card yet — issue one so each visit can be stamped by scanning its QR.' : <>No card designs yet. Create one in <Link to="/loyalty">Loyalty Cards</Link>.</>}</p>
+      ) : (
+        <div className="grid g2">{cards.data.data.map((c) => (
+          <button key={c.id} type="button" onClick={() => setOpen(c.code)} style={{ all: 'unset', cursor: 'pointer', display: 'block' }} aria-label={`Open ${c.program_name} card`}>
+            <StampCard compact card={c} salonName={salon?.name} qrValue={cardUrl(tenant?.slug, c.code)} />
+          </button>
+        ))}</div>
+      )}
+      {issue && <IssueModal customer={customer} programs={active} onClose={() => setIssue(false)} onIssued={(code) => { setIssue(false); cards.reload(); setOpen(code); }} />}
+      {open && <CardDrawer code={open} onClose={() => { setOpen(null); cards.reload(); }} />}
+    </Card>
   );
 }

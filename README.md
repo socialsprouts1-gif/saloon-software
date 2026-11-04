@@ -1,5 +1,7 @@
 # Salon Studio ERP
 
+**A multi-salon platform.** Any salon can sign up at `/signup` and gets its own private admin panel and database (staff, customers, appointments, billing, inventory, payroll, loyalty cards…). The platform owner manages every salon from `/platform`.
+
 A complete salon management system: appointments, QR online booking, POS billing, staff, attendance, payroll, inventory, expenses, CRM, memberships, coupons, multi-branch analytics and an AI assistant — all on one database, so every action updates every related number.
 
 ## Quick start
@@ -28,7 +30,7 @@ npm run seed
 
 **No login needed for local testing:** when you open the app on the same computer that runs it, you're signed in as the owner automatically. Visitors from other machines still see the login page. Sign out to try other roles; set `AUTO_LOGIN=0` to turn this off.
 
-Demo logins (password `Demo@1234` for staff, `Owner@1234` for the owner created by `npm run seed`):
+`npm run seed` (re)creates the demo salon **Lumière** (ID `lumiere`) without touching other salons. Demo logins (password `Demo@1234` for staff, `Owner@1234` for the owner); platform owner `admin@salonstudio.demo` / `Admin@1234` at `/platform` if no platform account exists yet:
 
 | Role | Email |
 | --- | --- |
@@ -60,6 +62,24 @@ npm test
 
 End-to-end workflow tests run against a throwaway database: double-booking prevention, QR booking, POS → stock/revenue/commission/coupons/loyalty, invoice voiding, package credits, audited attendance corrections, the payroll example (₹15,000 + ₹2,000 + ₹500 − ₹500 = ₹17,000), salary → expense → profit, role isolation and the AI assistant.
 
+## Platform & salons
+
+- **Salons:** `/signup` creates a salon with its own database (`data/tenants/<salon-id>.db` locally). Staff sign in at `/login` with just their email; if one email works at several salons, they pick the salon.
+- **Platform owner panel (`/platform`):** the first visit creates the platform owner account. It lists every salon with live figures, and lets you add a salon for a client, change plan, suspend/reactivate, delete, or **open a salon's panel** as its owner for support (recorded in that salon's audit log, with a banner while active).
+- **Public links include the salon:** booking `/s/<salon-id>/book/<token>`, shared invoices `/s/<salon-id>/i/<token>`, loyalty cards `/s/<salon-id>/card/<code>`. Older links without the salon ID keep working.
+- **Upgrading:** an existing single-salon install (`data/salon.db`) becomes the first salon automatically on start-up.
+- Set `ALLOW_SIGNUP=0` to close public sign-up (salons can still be added from `/platform`).
+
+## Loyalty stamp cards
+
+Owners design cards in **Loyalty Cards → New card design**: name, colour, number of visits (e.g. 4), the reward (e.g. "free haircut on the 5th visit"), which services earn a stamp, an optional free service for POS, and the minimum hours between stamps (stops accidental double scans).
+
+- Issue a card from a customer's profile or the Loyalty page. Each card has a unique QR, which you can print as a wallet-size card, download, or send on WhatsApp.
+- Staff press **Scan** (top bar, any page) and point the camera at the card. The card opens and they tap **Tick visit**. You can also type the 8-character card number.
+- Customers scanning their own card see their progress (first name only). Signed-in staff scanning with a phone camera get a button to stamp it.
+- When the card is full, tick **Use loyalty reward** on the service in POS (billed at ₹0), or mark it given on the card. The card restarts.
+- **Auto-stamp from bills** (optional per design) stamps the card when an eligible service is billed. Voiding the bill reverses stamps and rewards.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -71,6 +91,8 @@ End-to-end workflow tests run against a throwaway database: double-booking preve
 | `BLOB_READ_WRITE_TOKEN` | — | Vercel Blob store for logos, photos and receipts (added automatically when you connect a Blob store) |
 | `CRON_SECRET` | — | Optional; protects the daily `/api/cron` reminder job |
 | `JWT_SECRET` | auto-generated and stored in the database | Session signing key |
+| `ALLOW_SIGNUP` | on | `0` closes public salon sign-up |
+| `TURSO_ORG` / `TURSO_API_TOKEN` / `TURSO_GROUP_TOKEN` | — | Hosted mode only: lets the platform create one Turso database per additional salon |
 | `AUTO_LOGIN` | on for this computer only | `0` disables automatic owner sign-in; `1` allows it from any machine (testing only) |
 | `ANTHROPIC_API_KEY` | — | Optional; enables Claude for the AI assistant (can also be set in Settings) |
 
@@ -123,7 +145,7 @@ By default the app creates ready-to-send WhatsApp click-to-chat links (invoice s
 
 ### Quick demo (no setup)
 
-Import the repo into Vercel with **Root Directory empty** and deploy — no environment variables needed. Without a database configured, the app runs in **demo mode**: it loads the sample salon automatically and opens straight into the owner's admin panel (no login). Changes made during a demo are temporary and can reset when Vercel restarts the server. Anyone with the link gets admin access to the sample data, so don't put real data in a demo deployment.
+Import the repo into Vercel with **Root Directory empty** and deploy — no environment variables needed. Without a database configured, the app runs in **demo mode**: it loads the sample salon automatically and opens straight into the owner's admin panel (no login). Changes made during a demo (including salons created through sign-up) are temporary and can reset when Vercel restarts the server. The platform panel is at `/platform` (`admin@salonstudio.demo` / `Admin@1234`). Anyone with the link gets admin access to the sample data, so don't put real data in a demo deployment.
 
 ### Real use
 
@@ -138,7 +160,8 @@ The whole app (screens + API) deploys as one Vercel project. `vercel.json` build
 Notes:
 - Reminders (upcoming appointments, low stock, birthdays, recurring expenses) run whenever staff use the app (at most every 5 minutes) plus once a day via Vercel Cron.
 - Uploads are limited to 4 MB on Vercel.
-- Automatic owner sign-in never applies on Vercel; staff log in normally.
+- Automatic owner sign-in never applies on Vercel (except demo mode); staff log in normally.
+- The first salon lives in the main Turso database. Each additional salon needs its own database, which the platform creates through the Turso Platform API: add `TURSO_ORG`, `TURSO_API_TOKEN` and a group auth token as `TURSO_GROUP_TOKEN`.
 - To load demo data into an existing hosted database from your computer: `TURSO_DATABASE_URL=… TURSO_AUTH_TOKEN=… npm run seed` (this wipes it first).
 
 The app also runs on any Node host with a persistent disk (no Turso needed): `npm install && npm run build && npm start`, with `DATA_DIR` pointing at the disk.

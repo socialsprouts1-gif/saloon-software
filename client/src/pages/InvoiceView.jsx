@@ -49,7 +49,7 @@ export function InvoicePaper({ inv, salon, tax, invoiceSettings }) {
 }
 
 export default function InvoiceView({ publicView }) {
-  const { id, token } = useParams();
+  const { id, token, slug } = useParams();
   const [sp] = useSearchParams();
   const nav = useNavigate();
   const auth = useAuth();
@@ -61,7 +61,7 @@ export default function InvoiceView({ publicView }) {
   const [payOpen, setPayOpen] = useState(false);
   const load = async () => {
     try {
-      if (publicView) { const r = await api.get(`/api/public/invoice/${token}`); setInv(r.invoice); setMeta(r); }
+      if (publicView) { const r = await api.get(slug ? `/api/public/s/${slug}/invoice/${token}` : `/api/public/invoice/${token}`); setInv(r.invoice); setMeta(r); }
       else { const r = await api.get(`/api/invoices/${id}`); setInv(r); setMeta(await api.get(`/api/public/invoice/${r.public_token}`)); }
     } catch (e) { setErr(e); }
   };

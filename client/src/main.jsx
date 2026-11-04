@@ -35,6 +35,10 @@ const Notifications = P(() => import('./pages/Notifications.jsx'));
 const Branches = P(() => import('./pages/Branches.jsx'));
 const Settings = P(() => import('./pages/Settings.jsx'));
 const Assistant = P(() => import('./pages/Assistant.jsx'));
+const LoyaltyCards = P(() => import('./pages/LoyaltyCards.jsx'));
+const PublicCard = P(() => import('./pages/PublicCard.jsx'));
+const Signup = P(() => import('./pages/Signup.jsx'));
+const Platform = P(() => import('./pages/Platform.jsx'));
 
 function Guard({ perm, children }) {
   const { can } = useAuth();
@@ -55,8 +59,15 @@ function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/signup" element={<Suspense fallback={null}><Signup /></Suspense>} />
+      <Route path="/platform" element={<Suspense fallback={null}><Platform /></Suspense>} />
+      <Route path="/s/:slug/book/:token" element={<Suspense fallback={null}><PublicBooking /></Suspense>} />
+      <Route path="/s/:slug/i/:token" element={<Suspense fallback={null}><InvoiceView publicView /></Suspense>} />
+      <Route path="/s/:slug/card/:code" element={<Suspense fallback={null}><PublicCard /></Suspense>} />
+      {/* older links without the salon id */}
       <Route path="/book/:token" element={<Suspense fallback={null}><PublicBooking /></Suspense>} />
       <Route path="/i/:token" element={<Suspense fallback={null}><InvoiceView publicView /></Suspense>} />
+      <Route path="/card/:code" element={<Suspense fallback={null}><PublicCard /></Suspense>} />
       <Route element={<Protected />}>
         <Route index element={page(<Dashboard />, 'dashboard')} />
         <Route path="appointments" element={page(<Appointments />, 'appointments')} />
@@ -80,6 +91,7 @@ function App() {
         <Route path="branches" element={page(<Branches />, 'branches')} />
         <Route path="settings" element={page(<Settings />, 'settings')} />
         <Route path="assistant" element={page(<Assistant />, 'ai')} />
+        <Route path="loyalty" element={page(<LoyaltyCards />, ['loyalty', 'billing', 'customers'])} />
         <Route path="*" element={<Empty title="Page not found" />} />
       </Route>
     </Routes>

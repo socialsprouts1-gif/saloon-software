@@ -1,17 +1,18 @@
 import './tz.js';
 import Database from 'libsql';
 import fs from 'node:fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const IS_VERCEL = !!process.env.VERCEL;
-// A hosted libSQL/Turso database is used when its URL is set (required on Vercel); otherwise a local file.
+// Hosted libSQL/Turso is used when its URL is set (required on Vercel for real use); otherwise local files.
 const REMOTE_URL = process.env.TURSO_DATABASE_URL || process.env.LIBSQL_URL;
+const REMOTE_TOKEN = process.env.TURSO_AUTH_TOKEN || process.env.LIBSQL_AUTH_TOKEN;
 export const IS_REMOTE = !!REMOTE_URL;
-// Demo mode: on Vercel without a hosted database the app runs on a throwaway copy in /tmp,
-// filled with sample data and opened straight into the admin panel. Changes made during a
-// demo can reset when Vercel recycles the server. Set DEMO_MODE=0 to require a real database.
+// Demo mode: on Vercel without a hosted database the platform runs on throwaway copies in /tmp,
+// with a sample salon opened straight into its admin panel. Set DEMO_MODE=0 to require a database.
 export const DEMO_MODE = process.env.DEMO_MODE === '1' || (IS_VERCEL && !IS_REMOTE && process.env.DEMO_MODE !== '0');
 if (IS_VERCEL && !IS_REMOTE && !DEMO_MODE) {
   throw new Error('Database not configured: add TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in Vercel → Settings → Environment Variables.');
@@ -20,14 +21,45 @@ if (IS_VERCEL && !IS_REMOTE && !DEMO_MODE) {
 export const DISK_OK = !IS_VERCEL || DEMO_MODE;
 export const DATA_DIR = process.env.DATA_DIR || (IS_VERCEL ? '/tmp/salon-data' : path.join(__dirname, '..', 'data'));
 export const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
-if (DISK_OK) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+export const TENANT_DIR = path.join(DATA_DIR, 'tenants');
+if (DISK_OK) { fs.mkdirSync(UPLOAD_DIR, { recursive: true }); fs.mkdirSync(TENANT_DIR, { recursive: true }); }
 
-const DB_FILE = process.env.DB_FILE || path.join(DATA_DIR, 'salon.db');
-export let db = IS_REMOTE
-  ? new Database(REMOTE_URL, { authToken: process.env.TURSO_AUTH_TOKEN || process.env.LIBSQL_AUTH_TOKEN })
-  : new Database(DB_FILE);
-if (!IS_REMOTE) db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
-try { db.exec('PRAGMA foreign_keys = ON;'); } catch { /* not supported by every host */ }
+/** Open a database: 'file:...' / plain path locally, or a libsql:// URL. */
+export function openDatabase(url, authToken) {
+  if (!url || url.startsWith('file:') || !/^\w+:\/\//.test(url)) {
+    const d = new Database(url ? url.replace(/^file:/, '') : ':memory:');
+    if (url && url !== ':memory:') d.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
+    try { d.exec('PRAGMA foreign_keys = ON;'); } catch { /* ignore */ }
+    return d;
+  }
+  const d = new Database(url, { authToken: authToken || REMOTE_TOKEN });
+  try { d.exec('PRAGMA foreign_keys = ON;'); } catch { /* not supported by every host */ }
+  return d;
+}
+
+// ---- platform registry: which salons exist and where their data lives -------------------------
+const PLATFORM_SCHEMA = `
+CREATE TABLE IF NOT EXISTS tenants (
+  id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL, owner_name TEXT, owner_email TEXT, phone TEXT, city TEXT,
+  status TEXT NOT NULL DEFAULT 'active', plan TEXT NOT NULL DEFAULT 'trial', db_url TEXT, notes TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS platform_admins (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE COLLATE NOCASE, password_hash TEXT NOT NULL,
+  last_login TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS user_index (
+  email TEXT NOT NULL COLLATE NOCASE, tenant_id INTEGER NOT NULL, PRIMARY KEY (email, tenant_id));
+CREATE TABLE IF NOT EXISTS platform_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+`;
+export const platformDb = IS_REMOTE ? openDatabase(REMOTE_URL, REMOTE_TOKEN) : openDatabase(path.join(DATA_DIR, 'platform.db'));
+platformDb.exec(PLATFORM_SCHEMA);
+const pclean = (r) => { if (r && '_metadata' in r) delete r._metadata; return r; };
+const pbind = (p) => p.map((v) => (typeof v === 'boolean' ? (v ? 1 : 0) : v === undefined ? null : v));
+export const pall = (sql, ...p) => platformDb.prepare(sql).all(...pbind(p)).map(pclean);
+export const pget = (sql, ...p) => pclean(platformDb.prepare(sql).get(...pbind(p)));
+export const prun = (sql, ...p) => platformDb.prepare(sql).run(...pbind(p));
+export const pgetMeta = (k) => pget('SELECT value FROM platform_meta WHERE key=?', k)?.value ?? null;
+export const psetMeta = (k, v) => prun('INSERT INTO platform_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', k, String(v));
+export const REMOTE_MAIN_URL = REMOTE_URL || null;
 
 const TS = `created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')), updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))`;
 
@@ -213,26 +245,79 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
+CREATE TABLE IF NOT EXISTS loyalty_programs (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, stamps_required INTEGER NOT NULL DEFAULT 4, reward TEXT NOT NULL,
+  reward_service_id INTEGER REFERENCES services(id), eligible_service_ids TEXT NOT NULL DEFAULT '[]',
+  color TEXT NOT NULL DEFAULT '#6d2a52', terms TEXT, auto_stamp INTEGER NOT NULL DEFAULT 0, min_gap_hours INTEGER NOT NULL DEFAULT 2,
+  is_active INTEGER NOT NULL DEFAULT 1, ${TS});
+
+CREATE TABLE IF NOT EXISTS loyalty_cards (
+  id INTEGER PRIMARY KEY, program_id INTEGER NOT NULL REFERENCES loyalty_programs(id), customer_id INTEGER NOT NULL REFERENCES customers(id),
+  code TEXT NOT NULL UNIQUE, stamps INTEGER NOT NULL DEFAULT 0, rewards_redeemed INTEGER NOT NULL DEFAULT 0,
+  last_stamp_at TEXT, status TEXT NOT NULL DEFAULT 'active', ${TS});
+
+CREATE TABLE IF NOT EXISTS loyalty_events (
+  id INTEGER PRIMARY KEY, card_id INTEGER NOT NULL REFERENCES loyalty_cards(id), type TEXT NOT NULL,
+  invoice_id INTEGER, user_id INTEGER, user_name TEXT, note TEXT, stamps_after INTEGER NOT NULL, ${TS});
+
 CREATE TABLE IF NOT EXISTS message_log (
   id INTEGER PRIMARY KEY, channel TEXT NOT NULL, recipient TEXT, body TEXT, status TEXT, error TEXT, ${TS});
 `;
-db.exec(schema);
-
 // Lightweight forward migrations: add columns introduced after a database was created
 const ensureColumns = {
   invoices: { loyalty_earned: 'INTEGER NOT NULL DEFAULT 0', loyalty_value: 'REAL NOT NULL DEFAULT 0', void_reason: 'TEXT' },
+  invoice_items: { reward_card_id: 'INTEGER' },
 };
-for (const [table, cols] of Object.entries(ensureColumns)) {
-  const have = new Set(db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all().map((c) => c.name));
-  for (const [col, def] of Object.entries(cols)) if (!have.has(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+function prepareTenantDb(d) {
+  d.exec(schema);
+  for (const [table, cols] of Object.entries(ensureColumns)) {
+    const have = new Set(d.prepare(`SELECT name FROM pragma_table_info('${table}')`).all().map((c) => c.name));
+    for (const [col, def] of Object.entries(cols)) if (!have.has(col)) d.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+  }
 }
+
+// ---- per-request salon context -------------------------------------------------------------
+// Every query runs against the current salon's own database. The salon is chosen per request
+// (from the signed-in user's token or the public link) and carried through async code by
+// AsyncLocalStorage, so route and business code never has to pass it around.
+const als = new AsyncLocalStorage();
+const ctxCache = new Map();
+let scriptCtx = null;
+const makeCtx = (d, tenant) => ({ db: d, tenant, stmts: new Map(), txDepth: 0 });
+
+/** Database location for a salon: its own file locally, or its db_url (hosted). */
+export function tenantDbUrl(t) { return t.db_url || path.join(TENANT_DIR, `${t.slug}.db`); }
+
+export function tenantContext(t) {
+  let c = ctxCache.get(t.id);
+  if (!c) {
+    const d = openDatabase(tenantDbUrl(t), process.env.TURSO_GROUP_TOKEN || REMOTE_TOKEN);
+    prepareTenantDb(d);
+    c = makeCtx(d, t);
+    ctxCache.set(t.id, c);
+  }
+  c.tenant = t; // keep latest registry details (name/status)
+  return c;
+}
+export const forgetTenant = (id) => { const c = ctxCache.get(id); if (c) { try { c.db.close(); } catch { /* ignore */ } ctxCache.delete(id); } };
+/** Run fn with the given salon selected (works across awaits). */
+export const runInTenant = (t, fn) => als.run(tenantContext(t), fn);
+/** For scripts and tests: select a salon for code running outside a request. */
+export const useTenantForScript = (t) => { scriptCtx = t ? tenantContext(t) : null; };
+const cur = () => {
+  const c = als.getStore() || scriptCtx;
+  if (!c) throw new Error('No salon selected');
+  return c;
+};
+export const currentTenant = () => (als.getStore() || scriptCtx)?.tenant ?? null;
+export const currentDb = () => cur().db;
 
 // ---- tiny query helpers -------------------------------------------------
 // Prepared statements are cached (saves a round trip per query on a hosted database).
-const stmts = new Map();
 const stmt = (sql) => {
-  let s = stmts.get(sql);
-  if (!s) { if (stmts.size > 500) stmts.clear(); s = db.prepare(sql); stmts.set(sql, s); }
+  const c = cur();
+  let s = c.stmts.get(sql);
+  if (!s) { if (c.stmts.size > 500) c.stmts.clear(); s = c.db.prepare(sql); c.stmts.set(sql, s); }
   return s;
 };
 const bind = (p) => p.map((v) => (typeof v === 'boolean' ? (v ? 1 : 0) : v === undefined ? null : v));
@@ -248,11 +333,9 @@ export const scalar = (sql, ...p) => { const r = get(sql, ...p); return r ? Obje
  * Used to build demo data quickly before copying it to a hosted database in bulk.
  */
 export function withScratchDatabase(fn) {
-  const target = db;
   const scratch = new Database(':memory:');
-  scratch.exec(schema);
-  db = scratch; stmts.clear();
-  try { fn(); } finally { db = target; stmts.clear(); }
+  prepareTenantDb(scratch);
+  als.run(makeCtx(scratch, currentTenant()), fn);
   return scratch;
 }
 
@@ -268,7 +351,7 @@ export function copyDatabaseFrom(source, { skip = ['app_meta'] } = {}) {
       for (let i = 0; i < rows.length; i += per) {
         const chunk = rows.slice(i, i + per);
         const sql = `INSERT OR REPLACE INTO ${t} (${cols.join(',')}) VALUES ${chunk.map(() => `(${cols.map(() => '?').join(',')})`).join(',')}`;
-        db.prepare(sql).run(...chunk.flatMap((r) => cols.map((c) => r[c] ?? null)));
+        cur().db.prepare(sql).run(...chunk.flatMap((r) => cols.map((c) => r[c] ?? null)));
       }
     }
   });
@@ -278,15 +361,15 @@ export function copyDatabaseFrom(source, { skip = ['app_meta'] } = {}) {
 export const getMeta = (key) => get('SELECT value FROM app_meta WHERE key=?', key)?.value ?? null;
 export const setMeta = (key, value) => run('INSERT INTO app_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, String(value));
 
-let txDepth = 0;
 /** Runs fn inside a transaction (nesting-safe). The driver is synchronous, so this is atomic. */
 export function tx(fn) {
-  if (txDepth > 0) return fn();
-  db.exec('BEGIN IMMEDIATE');
-  txDepth++;
-  try { const r = fn(); db.exec('COMMIT'); return r; }
-  catch (e) { db.exec('ROLLBACK'); throw e; }
-  finally { txDepth--; }
+  const c = cur();
+  if (c.txDepth > 0) return fn();
+  c.db.exec('BEGIN IMMEDIATE');
+  c.txDepth++;
+  try { const r = fn(); c.db.exec('COMMIT'); return r; }
+  catch (e) { c.db.exec('ROLLBACK'); throw e; }
+  finally { c.txDepth--; }
 }
 
 /**

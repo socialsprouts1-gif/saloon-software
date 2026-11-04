@@ -18,9 +18,9 @@ export class ApiError extends Error {
 let onUnauthorized = () => {};
 export const setUnauthorizedHandler = (fn) => { onUnauthorized = fn; };
 
-async function request(method, url, body, { raw = false, isForm = false } = {}) {
+async function request(method, url, body, { raw = false, isForm = false, token: tokenOverride } = {}) {
   const headers = { 'X-Branch-Id': getBranch() };
-  const token = getToken();
+  const token = tokenOverride !== undefined ? tokenOverride : getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined && !isForm) headers['Content-Type'] = 'application/json';
   let res;
@@ -29,9 +29,10 @@ async function request(method, url, body, { raw = false, isForm = false } = {}) 
   } catch {
     throw new ApiError(0, 'Network error — check your connection');
   }
-  if (res.status === 401 && token && !url.startsWith('/api/auth/login')) onUnauthorized();
+  if (res.status === 401 && token && tokenOverride === undefined && !url.startsWith('/api/auth/login')) onUnauthorized();
   if (raw) { if (!res.ok) throw new ApiError(res.status, 'Download failed'); return res; }
   const data = res.headers.get('content-type')?.includes('json') ? await res.json() : null;
+  if (res.status === 300) return data; // e.g. login: choose which salon
   if (!res.ok) throw new ApiError(res.status, data?.error || `Request failed (${res.status})`, data?.details);
   return data;
 }
@@ -49,4 +50,16 @@ export const api = {
   del: (url) => request('DELETE', url),
   upload: (url, file) => { const f = new FormData(); f.append('file', file); return request('POST', url, f, { isForm: true }); },
   blob: async (url) => (await request('GET', url, undefined, { raw: true })).blob(),
+};
+
+// ---- platform owner panel (separate session from salon logins) ----------------------------------
+const PLATFORM_KEY = 'salon.platformToken';
+export const getPlatformToken = () => store.get(PLATFORM_KEY);
+export const setPlatformToken = (t) => store.set(PLATFORM_KEY, t);
+const pt = () => getPlatformToken() || '';
+export const platformApi = {
+  get: (url, params) => request('GET', url + qs(params), undefined, { token: pt() }),
+  post: (url, body = {}) => request('POST', url, body, { token: pt() }),
+  put: (url, body = {}) => request('PUT', url, body, { token: pt() }),
+  del: (url, body) => request('DELETE', url, body, { token: pt() }),
 };

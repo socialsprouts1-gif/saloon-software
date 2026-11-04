@@ -6,7 +6,8 @@ import { money, today, addDays, parseDate, fmtTime, fmtDate } from '../lib/forma
 import { Button, Input, Textarea, Avatar, Spinner } from '../components/ui.jsx';
 
 export default function PublicBooking() {
-  const { token } = useParams();
+  const { token, slug } = useParams();
+  const base = slug ? `/api/public/s/${slug}/book/${token}` : `/api/public/book/${token}`;
   const [sp] = useSearchParams();
   const via = sp.get('src') === 'qr' ? 'qr' : 'online';
   const [info, setInfo] = useState(null);
@@ -20,12 +21,12 @@ export default function PublicBooking() {
   const [formErr, setFormErr] = useState('');
 
   useEffect(() => {
-    api.get(`/api/public/book/${token}`).then((d) => {
+    api.get(base).then((d) => {
       setInfo(d); setSel((s) => ({ ...s, branch_id: d.branches[0]?.id, date: d.today || s.date }));
       document.title = `Book at ${d.salon.name}`;
       const key = `tracked-${token}-${via}-${today()}`;
-      try { if (!sessionStorage.getItem(key)) { api.post(`/api/public/book/${token}/track`, { type: via === 'qr' ? 'scan' : 'visit' }); if (via === 'qr') api.post(`/api/public/book/${token}/track`, { type: 'visit' }); sessionStorage.setItem(key, '1'); } }
-      catch { api.post(`/api/public/book/${token}/track`, { type: 'visit' }); }
+      try { if (!sessionStorage.getItem(key)) { api.post(`${base}/track`, { type: via === 'qr' ? 'scan' : 'visit' }); if (via === 'qr') api.post(`${base}/track`, { type: 'visit' }); sessionStorage.setItem(key, '1'); } }
+      catch { api.post(`${base}/track`, { type: 'visit' }); }
     }).catch((e) => setErr(e.message));
   }, [token, via]);
 
@@ -41,7 +42,7 @@ export default function PublicBooking() {
   useEffect(() => {
     if (step !== 2 || !sel.service_ids.length) return;
     setSlots(null);
-    api.get(`/api/public/book/${token}/slots`, { branch_id: sel.branch_id, date: sel.date, service_ids: sel.service_ids.join(','), employee_id: sel.employee_id || undefined })
+    api.get(`${base}/slots`, { branch_id: sel.branch_id, date: sel.date, service_ids: sel.service_ids.join(','), employee_id: sel.employee_id || undefined })
       .then(setSlots).catch((e) => setSlots({ slots: [], closed: e.message }));
   }, [step, sel.date, sel.employee_id, sel.branch_id, sel.service_ids.join()]); // eslint-disable-line
 
@@ -51,8 +52,8 @@ export default function PublicBooking() {
     if (!/^\+?\d[\d\s-]{8,14}$/.test(sel.phone.trim())) return setFormErr('Please enter a valid mobile number');
     setBusy(true);
     try {
-      if (mode === 'package') setDone({ pkg: await api.post(`/api/public/book/${token}/packages`, { package_id: sel.package_id, branch_id: sel.branch_id, name: sel.name, phone: sel.phone }) });
-      else setDone(await api.post(`/api/public/book/${token}/appointments`, { ...sel, via, email: sel.email || undefined }));
+      if (mode === 'package') setDone({ pkg: await api.post(`${base}/packages`, { package_id: sel.package_id, branch_id: sel.branch_id, name: sel.name, phone: sel.phone }) });
+      else setDone(await api.post(`${base}/appointments`, { ...sel, via, email: sel.email || undefined }));
     } catch (e) {
       setFormErr(e.message);
       if (e.status === 409) { setStep(2); setSel((s) => ({ ...s, time: '' })); }

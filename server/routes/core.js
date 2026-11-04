@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import { all, get, insert, update, run, getSettings, setSetting, DEFAULT_SETTINGS, UPLOAD_DIR, IS_VERCEL, IS_REMOTE, DISK_OK } from '../db.js';
-import { requirePerm, MODULES, ROLES, DEFAULT_PERMISSIONS, randomToken } from '../lib/auth.js';
+import { requirePerm, MODULES, ROLES, permissionsFor, randomToken } from '../lib/auth.js';
 import { h, parse, HttpError, audit, paginate } from '../lib/util.js';
 import { runJobsIfDue } from '../lib/jobs.js';
 
@@ -96,7 +96,7 @@ function redact(s) {
 }
 r.get('/settings', requirePerm('settings', 'booking'), h((_req, res) => {
   const s = getSettings();
-  s.permissions = Object.fromEntries(ROLES.map((role) => [role, role === 'owner' ? MODULES : (s.permissions?.[role] ?? DEFAULT_PERMISSIONS[role])]));
+  s.permissions = Object.fromEntries(ROLES.map((role) => [role, permissionsFor(role)]));
   res.json({ settings: redact(s), modules: MODULES, roles: ROLES });
 }));
 r.put('/settings/:key', h((req, res) => {
@@ -109,7 +109,7 @@ r.put('/settings/:key', h((req, res) => {
   let value = req.body;
   if (key === 'permissions') {
     if (req.user.role !== 'owner') throw new HttpError(403, 'Only the owner can change role permissions');
-    value = Object.fromEntries(ROLES.filter((r2) => r2 !== 'owner').map((role) => [role, (req.body[role] || []).filter((m) => MODULES.includes(m))]));
+    value = { ...Object.fromEntries(ROLES.filter((r2) => r2 !== 'owner').map((role) => [role, (req.body[role] || []).filter((m) => MODULES.includes(m))])), _modules: MODULES };
   } else if (typeof value === 'object' && !Array.isArray(value)) {
     value = { ...current, ...value };
     for (const [k, f] of SECRET_PATHS) if (k === key && value[f] === '••••••••') value[f] = current[f]; // keep stored secret

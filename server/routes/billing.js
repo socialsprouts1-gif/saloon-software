@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { all, get, getSettings } from '../db.js';
+import { all, get, getSettings, currentTenant } from '../db.js';
 import { requirePerm } from '../lib/auth.js';
 import { h, parse, HttpError, audit, paginate, money, today, addDays } from '../lib/util.js';
 import { priceCart, createInvoice, addPayment, voidInvoice, invoiceDetail, PAYMENT_METHODS } from '../lib/billing.js';
@@ -14,6 +14,7 @@ const itemSchema = z.object({
   type: z.enum(['service', 'product', 'package']), ref_id: z.coerce.number().int(), qty: z.coerce.number().positive().max(999).default(1),
   unit_price: z.coerce.number().min(0).optional(), discount: z.coerce.number().min(0).default(0),
   employee_id: z.coerce.number().int().nullable().optional(), use_credit_id: z.coerce.number().int().nullable().optional(),
+  use_reward_card_id: z.coerce.number().int().nullable().optional(),
 });
 const cartSchema = z.object({
   customer_id: z.coerce.number().int().nullable().optional(), appointment_id: z.coerce.number().int().nullable().optional(),
@@ -50,7 +51,7 @@ r.post('/', h((req, res) => {
 
 function withShare(req, inv) {
   const s = getSettings();
-  const url = `${req.protocol}://${req.get('host')}/i/${inv.public_token}`;
+  const url = `${req.protocol}://${req.get('host')}/s/${currentTenant().slug}/i/${inv.public_token}`;
   const text = `Hi ${inv.customer_name || ''}, thank you for visiting ${s.salon.name}! Invoice ${inv.invoice_no}: ${s.salon.currency_symbol}${inv.total.toLocaleString('en-IN')}${inv.balance > 0 ? ` (balance due ${s.salon.currency_symbol}${inv.balance.toLocaleString('en-IN')})` : ''}. View: ${url}`;
   return { ...inv, share_url: url, whatsapp_url: inv.customer_phone ? waLink(inv.customer_phone, text) : `https://wa.me/?text=${encodeURIComponent(text)}` };
 }

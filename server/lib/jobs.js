@@ -76,7 +76,8 @@ export function runJobsIfDue(force = false) {
   return true;
 }
 
-export function startJobs() {
-  runJobsIfDue(true);
-  return setInterval(() => runJobsIfDue(), 5 * 60 * 1000).unref();
+/** Long-running servers: run every salon's jobs now and then every 5 minutes. */
+export function startJobs(runAll) {
+  runAll();
+  return setInterval(runAll, 5 * 60 * 1000).unref();
 }

@@ -39,6 +39,7 @@ export default function POS() {
   const employees = useApi('/api/staff/employees');
   const billable = useApi('/api/invoices/meta/billable-appointments');
   const credits = useApi(customer ? `/api/customers/${customer.id}/credits` : null);
+  const cards = useApi(customer ? '/api/loyalty/cards' : null, customer ? { customer_id: customer.id, pageSize: 10 } : null);
   const branchEmps = (employees.data || []).filter((e) => !consolidated || String(e.branch_id) === billBranch);
   const stylists = branchEmps.filter((e) => e.service_ids?.length);
 
@@ -66,7 +67,7 @@ export default function POS() {
 
   const cart = useMemo(() => ({
     branch_id: Number(billBranch) || undefined, customer_id: customer?.id || null, appointment_id: appointmentId,
-    items: lines.map((l) => ({ type: l.type, ref_id: l.ref_id, qty: l.qty, unit_price: Number(l.unit_price), discount: Number(l.discount) || 0, employee_id: l.employee_id ? Number(l.employee_id) : null, use_credit_id: l.use_credit_id || null })),
+    items: lines.map((l) => ({ type: l.type, ref_id: l.ref_id, qty: l.qty, unit_price: Number(l.unit_price), discount: Number(l.discount) || 0, employee_id: l.employee_id ? Number(l.employee_id) : null, use_credit_id: l.use_credit_id || null, use_reward_card_id: l.use_reward_card_id || null })),
     discount: discount.value ? { type: discount.type, value: Number(discount.value) } : null, coupon_code: appliedCoupon || null,
     redeem_points: Number(points) || 0, tax_enabled: taxOn, notes,
   }), [billBranch, customer, appointmentId, lines, discount, appliedCoupon, points, taxOn, notes]);
@@ -97,6 +98,8 @@ export default function POS() {
   const filter = (list) => (list || []).filter((x) => x.name.toLowerCase().includes(q.toLowerCase()) || (x.sku || '').toLowerCase().includes(q.toLowerCase()) || (x.barcode || '') === q);
   const items = tab === 'service' ? filter(services.data) : tab === 'product' ? filter(products.data?.data) : filter(packages.data);
   const creditFor = (sid) => (credits.data || []).filter((c) => c.service_id === sid);
+  // Full loyalty cards whose reward can cover this service (one reward per card per bill)
+  const rewardFor = (sid, key) => (cards.data?.data || []).filter((c) => c.reward_ready && (c.reward_service_id ? c.reward_service_id === sid : !c.eligible_service_ids.length || c.eligible_service_ids.includes(sid)) && !lines.some((l) => l.key !== key && l.use_reward_card_id === c.id));
 
   return (
     <div>
@@ -128,8 +131,9 @@ export default function POS() {
           <div className="card-body col" style={{ gap: 14 }}>
             {consolidated && <div className="row"><span className="label">Billing branch</span><select className="input sm grow" value={billBranch} onChange={(e) => { setBillBranch(e.target.value); setLines((ls) => ls.filter((l) => l.type !== 'product').map((l) => ({ ...l, employee_id: '' }))); }} aria-label="Billing branch">{branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select></div>}
             <div className="row between"><h2>Current bill</h2>{lines.length > 0 && <Button size="sm" variant="ghost" icon={X} onClick={reset}>Clear</Button>}</div>
-            <CustomerPicker value={customer} onChange={(c) => { setCustomer(c); setPoints(''); setLines((ls) => ls.map((l) => ({ ...l, use_credit_id: null }))); if (!c) setAppointmentId(null); }} />
+            <CustomerPicker value={customer} onChange={(c) => { setCustomer(c); setPoints(''); setLines((ls) => ls.map((l) => ({ ...l, use_credit_id: null, use_reward_card_id: null }))); if (!c) setAppointmentId(null); }} />
             {appointmentId && <Badge tone="plum">Billing appointment #{appointmentId}</Badge>}
+            {(cards.data?.data || []).map((c) => <div key={c.id} className="row small" style={{ gap: 8, padding: '6px 10px', borderRadius: 10, background: 'var(--bg-elev)', border: '1px solid var(--border)' }}><i className="dot" style={{ background: c.color }} /><span className="grow truncate">{c.program_name}: <b>{c.stamps}/{c.stamps_required}</b>{c.reward_ready ? ' — reward ready 🎁' : ''}</span></div>)}
             <div>
               {!lines.length ? <p className="faint small center" style={{ padding: 20 }}>Tap services or products to add them</p> : lines.map((l) => {
                 const cr = l.type === 'service' ? creditFor(l.ref_id) : [];
@@ -137,7 +141,7 @@ export default function POS() {
                   <div key={l.key} className="cart-line">
                     <div className="row top">
                       <div className="grow"><b style={{ fontSize: 13.5 }}>{l.name}</b>{l.type !== 'service' && <Badge tone="">{l.type}</Badge>}</div>
-                      <b className="num">{money(l.use_credit_id ? 0 : l.qty * l.unit_price - (Number(l.discount) || 0))}</b>
+                      <b className="num">{money(l.use_credit_id || l.use_reward_card_id ? 0 : l.qty * l.unit_price - (Number(l.discount) || 0))}</b>
                       <button className="btn ghost sm icon" onClick={() => setLines((ls) => ls.filter((x) => x.key !== l.key))} aria-label="Remove"><Trash2 size={14} /></button>
                     </div>
                     <div className="row wrap mt-sm" style={{ gap: 8 }}>
@@ -149,6 +153,7 @@ export default function POS() {
                         {(l.type === 'service' ? stylists.filter((s) => s.service_ids.includes(l.ref_id)) : branchEmps).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
                       </select>}
                     </div>
+                    {l.type === 'service' && rewardFor(l.ref_id, l.key).map((c) => <label key={c.id} className="check small mt-sm" style={{ color: 'var(--warning)' }}><input type="checkbox" checked={l.use_reward_card_id === c.id} onChange={(e) => upd(l.key, { use_reward_card_id: e.target.checked ? c.id : null, use_credit_id: null })} />🎁 Use loyalty reward — {c.program_name} ({c.reward})</label>)}
                     {cr.length > 0 && <label className="check small mt-sm"><input type="checkbox" checked={!!l.use_credit_id} onChange={(e) => upd(l.key, { use_credit_id: e.target.checked ? cr[0].id : null })} />Use package credit ({cr[0].package}: {cr[0].total - cr[0].used} left)</label>}
                   </div>
                 );
@@ -213,7 +218,7 @@ export function SuccessModal({ inv, onClose, onView }) {
         <Badge status={inv.status} />
         {inv.payments.map((p) => <div key={p.id} className="faint small">{payLabel(p.method)} {money(p.amount)}</div>)}
         <div className="row wrap mt" style={{ justifyContent: 'center' }}>
-          <Button icon={Printer} onClick={() => window.open(`/i/${inv.public_token}?print=1`, '_blank')}>Print</Button>
+          <Button icon={Printer} onClick={() => window.open(`${inv.share_url}?print=1`, '_blank')}>Print</Button>
           <Button icon={FileDown} disabled={!s} onClick={() => invoicePDF(inv, s.salon, s.tax, s.invoice_settings)}>PDF</Button>
           <a className="btn success" href={inv.whatsapp_url} target="_blank" rel="noreferrer"><MessageCircle size={16} />WhatsApp</a>
         </div>

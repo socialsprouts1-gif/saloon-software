@@ -10,7 +10,8 @@ process.env.TZ = 'Asia/Kolkata';
 process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'salon-test-'));
 
 const { app } = await import('../index.js');
-const { get, run, insert } = await import('../db.js');
+const { get, run, insert, useTenantForScript } = await import('../db.js');
+const { tenantBySlug } = await import('../platform.js');
 const util = await import('../lib/util.js');
 const { computePayroll } = await import('../lib/hr.js');
 const { createInvoice } = await import('../lib/billing.js');
@@ -29,9 +30,10 @@ const ids = {};
 before(async () => {
   server = app.listen(0);
   base = `http://127.0.0.1:${server.address().port}`;
-  const r = await call('POST', '/api/auth/setup', { salonName: 'Test Salon', ownerName: 'Owner', email: 'o@test.in', password: 'password123' }, null);
+  const r = await call('POST', '/api/auth/signup', { salonName: 'Test Salon', slug: 'test-salon', ownerName: 'Owner', email: 'o@test.in', password: 'password123' }, null);
   assert.equal(r.status, 200, JSON.stringify(r.data));
   owner = r.data.token;
+  useTenantForScript(tenantBySlug('test-salon')); // direct DB checks below read this salon
 });
 after(() => { server.close(); fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true }); });
 
@@ -71,7 +73,9 @@ test('prevents double booking the same stylist', async () => {
 
 test('QR booking works end-to-end without an account', async () => {
   const token = (await call('GET', '/api/settings')).data.settings.booking.token;
-  const pub = await call('GET', `/api/public/book/${token}`, null, null);
+  // public links carry the salon id; older links without it still resolve
+  assert.equal((await call('GET', `/api/public/book/${token}`, null, null)).status, 200);
+  const pub = await call('GET', `/api/public/s/test-salon/book/${token}`, null, null);
   assert.equal(pub.status, 200);
   assert.equal(pub.data.salon.name, 'Test Salon');
   assert.ok(pub.data.services.some((s) => s.id === ids.cut));
@@ -231,4 +235,61 @@ test('auto-login works only from this computer and can be switched off', async (
   // a request forwarded from another machine is refused
   const remote = await fetch(base + '/api/auth/auto-login', { method: 'POST', headers: { 'X-Forwarded-For': '203.0.113.9' } });
   assert.equal(remote.status, 403);
+});
+
+test('loyalty card: stamp via scan, double-scan guard, free reward in POS, auto-stamp, void reverses', async () => {
+  const prog = await call('POST', '/api/loyalty/programs', { name: 'Haircut Club', stamps_required: 4, reward: 'Free haircut', eligible_service_ids: [ids.cut], auto_stamp: true, min_gap_hours: 2 });
+  assert.equal(prog.status, 200, JSON.stringify(prog.data));
+  const card = (await call('POST', '/api/loyalty/cards', { customer_id: ids.cust, program_id: prog.data.id })).data;
+  assert.match(card.code, /^[A-Z2-9]{8}$/);
+  // issuing again returns the same card
+  assert.equal((await call('POST', '/api/loyalty/cards', { customer_id: ids.cust, program_id: prog.data.id })).data.code, card.code);
+  const s1 = await call('POST', `/api/loyalty/cards/${card.code}/stamp`, {});
+  assert.equal(s1.data.stamps, 1);
+  const again = await call('POST', `/api/loyalty/cards/${card.code}/stamp`, {});
+  assert.equal(again.status, 409, 'second scan within 2 hours is flagged');
+  for (let i = 0; i < 3; i++) await call('POST', `/api/loyalty/cards/${card.code}/stamp`, { force: true });
+  const full = (await call('GET', `/api/loyalty/cards/${card.code}`)).data;
+  assert.equal(full.stamps, 4); assert.equal(full.reward_ready, true);
+  assert.equal((await call('POST', `/api/loyalty/cards/${card.code}/stamp`, { force: true })).status, 400, 'full card cannot take more stamps');
+  // customer's public view (no login), with only the first name
+  const pub = (await call('GET', `/api/public/s/test-salon/card/${card.code}`, null, null)).data;
+  assert.equal(pub.card.stamps, 4); assert.equal(pub.card.customer, 'Riya');
+  // 5th visit: the haircut is free in POS and the card restarts
+  const inv = await call('POST', '/api/invoices', { customer_id: ids.cust, tax_enabled: false, items: [{ type: 'service', ref_id: ids.cut, employee_id: ids.emp, use_reward_card_id: full.id }], payments: [] });
+  assert.equal(inv.status, 200, JSON.stringify(inv.data));
+  assert.equal(inv.data.total, 0); assert.equal(inv.data.status, 'paid');
+  let after = (await call('GET', `/api/loyalty/cards/${card.code}`)).data;
+  assert.equal(after.stamps, 0); assert.equal(after.rewards_redeemed, 1, 'reward visit does not earn a new stamp');
+  // a normal paid haircut auto-stamps the card
+  const paid = await call('POST', '/api/invoices', { customer_id: ids.cust, tax_enabled: false, items: [{ type: 'service', ref_id: ids.cut, employee_id: ids.emp }], payments: [{ method: 'cash', amount: 1000 }] });
+  after = (await call('GET', `/api/loyalty/cards/${card.code}`)).data;
+  assert.equal(after.stamps, 1);
+  // voiding bills reverses both the stamp and the reward
+  await call('POST', `/api/invoices/${paid.data.id}/void`, { reason: 'test' });
+  await call('POST', `/api/invoices/${inv.data.id}/void`, { reason: 'test' });
+  after = (await call('GET', `/api/loyalty/cards/${card.code}`)).data;
+  assert.equal(after.stamps, 4); assert.equal(after.rewards_redeemed, 0);
+});
+
+test('salons are isolated from each other; platform admin can suspend and open a salon', async () => {
+  const s2 = await call('POST', '/api/auth/signup', { salonName: 'Glow Studio', ownerName: 'Priya', email: 'priya@glow.in', password: 'password123' }, null);
+  assert.equal(s2.status, 200, JSON.stringify(s2.data));
+  const t2 = s2.data.token;
+  assert.equal((await call('GET', '/api/customers', null, t2)).data.total, 0);
+  assert.equal((await call('GET', `/api/customers/${ids.cust}`, null, t2)).status, 404);
+  assert.equal((await call('GET', '/api/auth/me', null, t2)).data.tenant.slug, 'glow-studio');
+  // platform admin
+  const setup = await call('POST', '/api/platform/setup', { name: 'Admin', email: 'admin@platform.in', password: 'password123' }, null);
+  const p = setup.data.token;
+  assert.equal((await call('POST', '/api/platform/setup', { name: 'X', email: 'x@y.in', password: 'password123' }, null)).status, 400, 'only one first-time setup');
+  assert.equal((await call('GET', '/api/platform/salons', null, owner)).status, 401, 'salon owners cannot use the platform panel');
+  const list = (await call('GET', '/api/platform/salons', null, p)).data;
+  assert.equal(list.totals.salons, 2);
+  const glow = list.salons.find((x) => x.slug === 'glow-studio');
+  await call('PUT', `/api/platform/salons/${glow.id}`, { status: 'suspended' }, p);
+  assert.equal((await call('GET', '/api/customers', null, t2)).status, 403);
+  await call('PUT', `/api/platform/salons/${glow.id}`, { status: 'active' }, p);
+  const open = await call('POST', `/api/platform/salons/${glow.id}/open`, {}, p);
+  assert.equal((await call('GET', '/api/auth/me', null, open.data.token)).data.user.role, 'owner');
 });

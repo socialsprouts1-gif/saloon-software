@@ -1,7 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import crypto from 'node:crypto';
-import { all, get, insert, getSettings } from '../db.js';
+import { all, get, insert, getSettings, currentTenant } from '../db.js';
+import { cardDetail, cardEvents } from '../lib/loyalty.js';
+import { listTenants } from '../platform.js';
+import { runInTenant } from '../db.js';
 import { h, parse, HttpError, notify, today, addDays, audit } from '../lib/util.js';
 import { computeSlots, createAppointment, appointmentDetail, upsertCustomer } from '../lib/scheduling.js';
 import { createInvoice, invoiceDetail } from '../lib/billing.js';
@@ -43,6 +46,7 @@ r.get('/book/:token', h((req, res) => {
     salon: { name: s.salon.name, tagline: s.salon.tagline, logo: s.salon.logo, address: s.salon.address, phone: s.salon.phone, email: s.salon.email, currency_symbol: s.salon.currency_symbol },
     booking: { theme_color: s.booking.theme_color, welcome: s.booking.welcome, show_prices: s.booking.show_prices, max_advance_days: s.appointments.max_advance_days, allow_any_stylist: s.appointments.allow_any_stylist },
     opening_hours: s.opening_hours,
+    slug: currentTenant().slug,
     today: today(), // salon-local date, so visitors in other time zones see the right days
     branches: all('SELECT id,name,address,phone FROM branches WHERE is_active=1 ORDER BY id'),
     services, employees, packages,
@@ -117,7 +121,7 @@ r.post('/book/:token/packages', limit(5, 10 * 60000), h((req, res) => {
   const invId = createInvoice({ branchId: b.branch_id, customerId: cust.id, items: [{ type: 'package', ref_id: pk.id, qty: 1 }], payments: [], source: 'online', notes: 'Online package request — collect payment at salon' }, null);
   const inv = get('SELECT invoice_no,total,public_token FROM invoices WHERE id=?', invId);
   notify({ type: 'booking', title: `Package request: ${pk.name}`, message: `${b.name} (${b.phone}) — invoice ${inv.invoice_no} awaiting payment`, link: `/invoices/${invId}`, branchId: b.branch_id });
-  res.json({ invoice_no: inv.invoice_no, total: inv.total, invoice_url: `/i/${inv.public_token}` });
+  res.json({ invoice_no: inv.invoice_no, total: inv.total, invoice_url: `/s/${currentTenant().slug}/i/${inv.public_token}` });
 }));
 
 // Public, unguessable-token invoice view for sharing via WhatsApp
@@ -129,4 +133,46 @@ r.get('/invoice/:token', h((req, res) => {
   res.json({ invoice: safe, salon: { ...s.salon }, tax: s.tax, invoice_settings: s.invoice });
 }));
 
+// Customer's own view of a loyalty card (opened by scanning its QR). Shows first name only.
+r.get('/card/:code', h((req, res) => {
+  const c = cardDetail(req.params.code);
+  if (!c || c.status !== 'active') throw new HttpError(404, 'Card not found');
+  const s = getSettings();
+  res.json({
+    salon: { name: s.salon.name, logo: s.salon.logo, phone: s.salon.phone, address: s.salon.address },
+    slug: currentTenant().slug,
+    card: { code: c.code, customer: c.customer_name.split(' ')[0], program: c.program_name, stamps: c.stamps, stamps_required: c.stamps_required,
+      reward: c.reward, reward_ready: c.reward_ready, rewards_redeemed: c.rewards_redeemed, color: c.color, terms: c.terms,
+      history: cardEvents(c.id, 20).filter((e) => e.type === 'stamp' || e.type === 'redeem').map((e) => ({ type: e.type, at: e.created_at })) },
+  });
+}));
+
 export default r;
+
+// ---- which salon does a public request belong to? ---------------------------------------------
+/** /api/public/s/:slug/... — the salon is in the link. */
+export function tenantFromSlug(req, _res, next) {
+  const t = listTenants().find((x) => x.slug === String(req.params.slug).toLowerCase());
+  if (!t || t.status !== 'active') return next(new HttpError(404, 'This salon link is not valid.'));
+  runInTenant(t, () => next());
+}
+
+/** Older links without a salon in them (/book/:token, /i/:token): find the salon that owns the token. */
+const legacyCache = new Map();
+export function tenantFromLegacyLink(req, _res, next) {
+  const m = req.path.match(/^\/(book|invoice|card)\/([^/]+)/);
+  if (!m) return next(new HttpError(404, 'Not found'));
+  const [, kind, token] = m, key = `${kind}:${token}`;
+  const tenants = listTenants().filter((t) => t.status === 'active');
+  let t = tenants.find((x) => x.id === legacyCache.get(key));
+  if (!t) {
+    t = tenants.find((x) => runInTenant(x, () => {
+      if (kind === 'book') return getSettings().booking.token === token;
+      if (kind === 'invoice') return !!get('SELECT 1 FROM invoices WHERE public_token=?', token);
+      return !!get('SELECT 1 FROM loyalty_cards WHERE code=?', token.toUpperCase());
+    }));
+    if (t) legacyCache.set(key, t.id);
+  }
+  if (!t) return next(new HttpError(404, 'This link is not valid.'));
+  runInTenant(t, () => next());
+}
