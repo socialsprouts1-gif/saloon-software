@@ -5,7 +5,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
-import { all, get, insert, update, run, getSettings, setSetting, DEFAULT_SETTINGS, UPLOAD_DIR, IS_VERCEL, IS_REMOTE } from '../db.js';
+import { all, get, insert, update, run, getSettings, setSetting, DEFAULT_SETTINGS, UPLOAD_DIR, IS_VERCEL, IS_REMOTE, DISK_OK } from '../db.js';
 import { requirePerm, MODULES, ROLES, DEFAULT_PERMISSIONS, randomToken } from '../lib/auth.js';
 import { h, parse, HttpError, audit, paginate } from '../lib/util.js';
 import { runJobsIfDue } from '../lib/jobs.js';
@@ -18,7 +18,7 @@ const r = Router();
 const USE_BLOB = !!process.env.BLOB_READ_WRITE_TOKEN;
 const PUBLIC_DIR = path.join(UPLOAD_DIR, 'public');
 const PRIVATE_DIR = path.join(UPLOAD_DIR, 'private');
-if (!IS_VERCEL) { fs.mkdirSync(PUBLIC_DIR, { recursive: true }); fs.mkdirSync(PRIVATE_DIR, { recursive: true }); }
+if (DISK_OK) { fs.mkdirSync(PUBLIC_DIR, { recursive: true }); fs.mkdirSync(PRIVATE_DIR, { recursive: true }); }
 const ALLOWED = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/svg+xml': '.svg', 'application/pdf': '.pdf' };
 const MAX_MB = IS_VERCEL ? 4 : 5; // Vercel caps request bodies at 4.5 MB
 const makeUploader = (types) => multer({
@@ -40,7 +40,7 @@ async function saveUpload(file, kind) {
     const b = await put(`${kind === 'public' ? 'images' : 'receipts'}/${name}`, file.buffer, { access, contentType: file.mimetype, addRandomSuffix: true });
     return kind === 'public' ? b.url : `blob:${b.pathname}`;
   }
-  if (IS_VERCEL) throw new HttpError(400, 'File uploads need a Vercel Blob store: Vercel → Storage → Blob → Connect to this project, then redeploy.');
+  if (!DISK_OK) throw new HttpError(400, 'File uploads need a Vercel Blob store: Vercel → Storage → Blob → Connect to this project, then redeploy.');
   fs.writeFileSync(path.join(kind === 'public' ? PUBLIC_DIR : PRIVATE_DIR, name), file.buffer);
   return kind === 'public' ? `/uploads/${name}` : name;
 }

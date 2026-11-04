@@ -4,11 +4,29 @@
   "buildCommand": "npm run build",
   "outputDirectory": "client/dist",
   "functions": {
-    "api/index.js": { "maxDuration": 300, "includeFiles": "node_modules/@libsql/**" }
+    "api/index.js": {
+      "maxDuration": 300,
+      "includeFiles": "node_modules/@libsql/**"
+    }
   },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api" },
-    { "source": "/(.*)", "destination": "/index.html" }
+    {
+      "source": "/api/(.*)",
+      "destination": "/api"
+    },
+    {
+      "source": "/uploads/(.*)",
+      "destination": "/api"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
   ],
-  "crons": [{ "path": "/api/cron", "schedule": "30 0 * * *" }]
+  "crons": [
+    {
+      "path": "/api/cron",
+      "schedule": "30 0 * * *"
+    }
+  ]
 }

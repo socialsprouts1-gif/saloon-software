@@ -1,6 +1,6 @@
 import './tz.js';
 import { fileURLToPath } from 'node:url';
-import { db, all, get, insert, run, tx, setSetting, getSettings, IS_REMOTE, withScratchDatabase, copyDatabaseFrom } from './db.js';
+import { db, all, get, insert, run, tx, setSetting, getSettings, IS_REMOTE, DEMO_MODE, withScratchDatabase, copyDatabaseFrom } from './db.js';
 import { hashPassword, randomToken } from './lib/auth.js';
 import { today, addDays, parseDate, toMin, fromMin, addMinutes, money } from './lib/util.js';
 import { createAppointment } from './lib/scheduling.js';
@@ -22,7 +22,7 @@ export const DEMO_STAFF_PASSWORD = 'Demo@1234';
  * copied over in bulk, which needs a few hundred round trips instead of thousands.
  */
 export function seedDemo(opts = {}) {
-  if (!IS_REMOTE) return generateDemo(opts, { days: Number(process.env.DEMO_DAYS) || 175, customers: 420 });
+  if (!IS_REMOTE) return generateDemo(opts, { days: Number(process.env.DEMO_DAYS) || (DEMO_MODE ? 90 : 175), customers: DEMO_MODE ? 300 : 420 });
   let creds;
   const scratch = withScratchDatabase(() => { creds = generateDemo(opts, { days: Number(process.env.DEMO_DAYS) || 90, customers: 300 }); });
   copyDatabaseFrom(scratch);
@@ -36,7 +36,7 @@ function generateDemo({ salonName = 'Lumière Salon & Spa', ownerName = 'Salon O
     // ---- settings & branches -------------------------------------------------------------
     const s = getSettings();
     setSetting('salon', { ...s.salon, name: salonName, tagline: 'Hair · Skin · Spa · Bridal', address: '12, 100 Feet Road, Indiranagar, Bengaluru 560038', phone: '+91 98450 12345', email: 'hello@lumiere.example', website: '' });
-    setSetting('booking', { ...s.booking, token: randomToken(9) });
+    setSetting('booking', { ...s.booking, token: DEMO_MODE ? 'demo-salon' : randomToken(9) }); // demo copies must share one QR link
     setSetting('tax', { ...s.tax, gstin: '29ABCDE1234F1Z5' });
     const b1 = insert('branches', { name: 'Indiranagar', address: '12, 100 Feet Road, Indiranagar, Bengaluru', phone: '+91 98450 12345', email: 'indiranagar@lumiere.example' });
     const b2 = insert('branches', { name: 'Koramangala', address: '45, 5th Block, Koramangala, Bengaluru', phone: '+91 98450 67890', email: 'koramangala@lumiere.example' });

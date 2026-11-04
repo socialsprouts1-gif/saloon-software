@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { all, get, insert, run, update, tx, setSetting, getSettings } from '../db.js';
+import { all, get, insert, run, update, tx, setSetting, getSettings, DEMO_MODE } from '../db.js';
 import { hashPassword, verifyPassword, signToken, authenticate, requirePerm, permissionsFor, ROLES, randomToken } from '../lib/auth.js';
 import { h, parse, HttpError, audit, localISO } from '../lib/util.js';
 
@@ -13,10 +13,10 @@ const throttleKey = (req, email) => `${req.ip}|${String(email).toLowerCase()}`;
 // Auto-login for local testing: signs in as the owner without a password, but only for
 // requests from this same computer (or when AUTO_LOGIN=1). Set AUTO_LOGIN=0 to turn it off.
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
-const autoLoginAllowed = (req) => process.env.AUTO_LOGIN !== '0' && (process.env.AUTO_LOGIN === '1' || LOOPBACK.has(req.ip));
+const autoLoginAllowed = (req) => process.env.AUTO_LOGIN !== '0' && (process.env.AUTO_LOGIN === '1' || DEMO_MODE || LOOPBACK.has(req.ip));
 
 r.get('/setup-status', h((req, res) => {
-  res.json({ needsSetup: !get('SELECT id FROM users LIMIT 1'), salon: getSettings().salon.name, autoLogin: autoLoginAllowed(req) });
+  res.json({ needsSetup: !get('SELECT id FROM users LIMIT 1'), salon: getSettings().salon.name, autoLogin: autoLoginAllowed(req), demo: DEMO_MODE });
 }));
 
 r.post('/auto-login', h((req, res) => {

@@ -68,7 +68,8 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
-  useEffect(() => { setUnauthorizedHandler(() => { setToken(null); setState((s) => ({ ...s, user: null })); }); load(); }, [load]);
+  // On an expired session, try automatic sign-in again (demo / local use) before showing the login page
+  useEffect(() => { setUnauthorizedHandler(() => { setToken(null); setState((s) => ({ ...s, user: null })); load(); }); load(); }, [load]);
 
   const value = useMemo(() => ({
     ...state, branch, version,

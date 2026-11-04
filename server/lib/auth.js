@@ -1,10 +1,13 @@
 import crypto from 'node:crypto';
-import { get, getSettings, getMeta, run } from '../db.js';
+import { get, getSettings, getMeta, run, DEMO_MODE } from '../db.js';
 import { HttpError } from './util.js';
 
 // ---- secret -----------------------------------------------------------------
 function loadSecret() {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
+  // Demo mode: every server instance builds its own sample database, so share one fixed key
+  // to keep the demo signed in when Vercel moves it to another instance.
+  if (DEMO_MODE) return 'salon-studio-public-demo';
   // Generated once and kept in the database, so it survives restarts and serverless cold starts
   run('INSERT OR IGNORE INTO app_meta(key,value) VALUES(?,?)', 'jwt_secret', crypto.randomBytes(48).toString('hex'));
   return getMeta('jwt_secret');

@@ -6,6 +6,11 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { authenticate } from './lib/auth.js';
 import { HttpError } from './lib/util.js';
+import { DEMO_MODE, get } from './db.js';
+import { seedDemo } from './seed.js';
+
+// Demo mode: load the sample salon the first time this server instance starts
+if (DEMO_MODE && !get('SELECT id FROM users LIMIT 1')) seedDemo({});
 import { startJobs, runJobsIfDue } from './lib/jobs.js';
 import authRoutes from './routes/auth.js';
 import coreRoutes, { PUBLIC_DIR } from './routes/core.js';

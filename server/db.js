@@ -9,12 +9,18 @@ export const IS_VERCEL = !!process.env.VERCEL;
 // A hosted libSQL/Turso database is used when its URL is set (required on Vercel); otherwise a local file.
 const REMOTE_URL = process.env.TURSO_DATABASE_URL || process.env.LIBSQL_URL;
 export const IS_REMOTE = !!REMOTE_URL;
-if (IS_VERCEL && !IS_REMOTE) {
+// Demo mode: on Vercel without a hosted database the app runs on a throwaway copy in /tmp,
+// filled with sample data and opened straight into the admin panel. Changes made during a
+// demo can reset when Vercel recycles the server. Set DEMO_MODE=0 to require a real database.
+export const DEMO_MODE = process.env.DEMO_MODE === '1' || (IS_VERCEL && !IS_REMOTE && process.env.DEMO_MODE !== '0');
+if (IS_VERCEL && !IS_REMOTE && !DEMO_MODE) {
   throw new Error('Database not configured: add TURSO_DATABASE_URL and TURSO_AUTH_TOKEN in Vercel → Settings → Environment Variables.');
 }
-export const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
+/** Whether local disk can be written (false only on Vercel with a hosted database). */
+export const DISK_OK = !IS_VERCEL || DEMO_MODE;
+export const DATA_DIR = process.env.DATA_DIR || (IS_VERCEL ? '/tmp/salon-data' : path.join(__dirname, '..', 'data'));
 export const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
-if (!IS_VERCEL) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+if (DISK_OK) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const DB_FILE = process.env.DB_FILE || path.join(DATA_DIR, 'salon.db');
 export let db = IS_REMOTE

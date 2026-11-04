@@ -121,6 +121,12 @@ By default the app creates ready-to-send WhatsApp click-to-chat links (invoice s
 
 ## Deploying to Vercel
 
+### Quick demo (no setup)
+
+Import the repo into Vercel with **Root Directory empty** and deploy — no environment variables needed. Without a database configured, the app runs in **demo mode**: it loads the sample salon automatically and opens straight into the owner's admin panel (no login). Changes made during a demo are temporary and can reset when Vercel restarts the server. Anyone with the link gets admin access to the sample data, so don't put real data in a demo deployment.
+
+### Real use
+
 The whole app (screens + API) deploys as one Vercel project. `vercel.json` builds the client, serves the API from `api/index.js`, and schedules a daily reminder job.
 
 1. **Database (Turso, free tier):** create a database at turso.tech, choosing the region closest to your Vercel functions (e.g. Mumbai for `bom1`). Copy its URL (`libsql://…`) and create an auth token.
